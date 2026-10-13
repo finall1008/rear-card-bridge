@@ -30,7 +30,7 @@ jobs:
         run: |
           set -euo pipefail
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-          yes | "$SDKMANAGER" --licenses > /dev/null
+          (set +o pipefail; yes | "$SDKMANAGER" --licenses > /dev/null)
           "$SDKMANAGER" "platforms;android-37.0" "build-tools;36.0.0"
 
       - name: Restore release signing key
