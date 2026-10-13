@@ -64,14 +64,13 @@ class ShizukuCardClient(context: Context) {
         if (closed || binding || service != null) return
         try {
             if (!Shizuku.pingBinder()) {
-                mutableState.value = ShizukuState(ShizukuStatus.NOT_RUNNING, "请先启动 Shizuku（ADB 模式）。")
+                mutableState.value = ShizukuState(ShizukuStatus.NOT_RUNNING, "请先启动 Shizuku。")
                 return
             }
             if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
                 mutableState.value = ShizukuState(ShizukuStatus.AUTH_REQUIRED, "需要授权才能读取主题卡片资源。")
                 return
             }
-            require(Shizuku.getUid() == 2000) { "当前版本需要以 ADB / shell 模式启动 Shizuku。" }
             binding = true
             mutableState.value = ShizukuState(ShizukuStatus.CONNECTING)
             Shizuku.bindUserService(args, connection)
