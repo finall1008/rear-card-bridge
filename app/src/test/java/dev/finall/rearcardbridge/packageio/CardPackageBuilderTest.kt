@@ -162,12 +162,12 @@ class CardPackageBuilderTest {
         val input = pack(root, "content.zip", "<canvas></canvas><script src=\"main.js\"></script>", "var importedMarker = '最新内容';")
         assertEquals("var importedMarker = '最新内容';", builder.extractScript(input))
         val output = File(root, "carrier.zip")
-        builder.buildLiveCarrier(input, output, "live/card")
+        builder.buildLiveCarrier(input, output, "live/card", "content://dev.finall.rearcardbridge.live/bindings/test/current")
         ZipFile(output).use { zip ->
             val xml = zip.getInputStream(zip.getEntry("manifest.xml")).readBytes().toString(Charsets.UTF_8)
             val widget = parseXml(xml)
             val binder = widget.getElementsByTagName("ContentProviderBinder").item(0) as Element
-            assertEquals("content://dev.finall.rearcardbridge.live/current", binder.getAttribute("uri"))
+            assertEquals("content://dev.finall.rearcardbridge.live/bindings/test/current", binder.getAttribute("uri"))
             assertEquals("payload", binder.getAttribute("columns"))
             val canvas = widget.getElementsByTagName("JsCanvas").item(0) as Element
             assertEquals("live_card", canvas.getAttribute("name"))
@@ -180,8 +180,40 @@ class CardPackageBuilderTest {
             assertTrue(zip.getEntry("assets/main.js") != null)
         }
         val blank = File(root, "blank-carrier.zip")
-        assertEquals(listOf("manifest.xml"), builder.buildLiveCarrier(null, blank, "blank").entryNames)
+        assertEquals(listOf("manifest.xml"), builder.buildLiveCarrier(null, blank, "blank", "content://dev.finall.rearcardbridge.live/bindings/blank/current").entryNames)
         ZipFile(blank).use { zip -> parseXml(zip.getInputStream(zip.getEntry("manifest.xml")).readBytes().toString(Charsets.UTF_8)) }
+    }
+
+    @Test
+    fun liveGroupCarriersReadTheirOwnUris() {
+        val root = Files.createTempDirectory("rear-live-groups").toFile()
+        val input = pack(root, "content.zip", "<canvas></canvas><script src=\"main.js\"></script>", "var importedMarker = 1;")
+        val alphaUri = "content://dev.finall.rearcardbridge.live/group/alpha?q=1&name=\"\u5361\u7247\""
+        val betaUri = "content://dev.finall.rearcardbridge.live/group/beta?x=<2>&y='ok'"
+        val alpha = File(root, "alpha.zip")
+        val beta = File(root, "beta.zip")
+        builder.buildLiveCarrier(input, alpha, "group/alpha", alphaUri)
+        builder.buildLiveCarrier(null, beta, "group/beta", betaUri)
+
+        ZipFile(alpha).use { zip ->
+            val xml = zip.getInputStream(zip.getEntry("manifest.xml")).readBytes().toString(Charsets.UTF_8)
+            val binder = parseXml(xml).getElementsByTagName("ContentProviderBinder").item(0) as Element
+            assertEquals(alphaUri, binder.getAttribute("uri"))
+            assertEquals("payload", binder.getAttribute("columns"))
+            assertTrue(xml.contains("uri=\"content://dev.finall.rearcardbridge.live/group/alpha?q=1&amp;name=&quot;\u5361\u7247&quot;\""))
+            assertFalse(xml.contains(betaUri))
+            assertFalse(xml.contains("importedMarker"))
+            assertTrue(zip.getEntry("assets/main.js") != null)
+        }
+        ZipFile(beta).use { zip ->
+            val xml = zip.getInputStream(zip.getEntry("manifest.xml")).readBytes().toString(Charsets.UTF_8)
+            val binder = parseXml(xml).getElementsByTagName("ContentProviderBinder").item(0) as Element
+            assertEquals(betaUri, binder.getAttribute("uri"))
+            assertTrue(xml.contains("uri=\"content://dev.finall.rearcardbridge.live/group/beta?x=&lt;2&gt;&amp;y=&apos;ok&apos;\""))
+            assertFalse(xml.contains(alphaUri))
+            assertEquals(listOf("manifest.xml"), zip.entries().toList().map { it.name })
+        }
+
     }
 
     private fun pack(root: File, name: String, body: String, main: String): File =

@@ -14,7 +14,11 @@ Android / Kotlin 应用，包名 `dev.finall.rearcardbridge`，界面使用 Miui
 
 ## 日常更新
 
-「选择 ZIP 导入」读取整个 ZIP，将合并后的脚本、内容名称、版本号和原 ZIP 保存到本应用私有目录。只保留当前内容。
+「选择 ZIP 导入」读取整个 ZIP，将合并后的脚本、内容名称、版本号和原 ZIP 保存到本应用私有目录。按来源 App 和 key 分组，每组保留自己的当前内容、独立版本和目标卡片。
+
+外部未传 key 时使用来源 App 包名；内部以 `(来源包名, key)` 区分分组。同一张目标卡片只能被一个分组占用。首次遇到一组内容时，先暂存内容，再由用户选择目标、安装载体并在系统里重新应用一次。更换目标前先恢复原载体；已知组日常更新不再选卡。界面的分组列表用于切换、导入、重装载体和恢复。
+
+仅支持按来源 App / key 的分组载体，不迁移原有单组内容或绑定。原有单组载体需要重新导入内容、选择目标并安装。
 
 已应用的固定载体通过只读 `ContentProvider` 查询最新脚本，经 MAML `HostVar` 传给 `JsCanvas`，在运行时执行。更新不会替换系统资源、移除卡片或跳转系统页面，也不需要 Shizuku。
 
@@ -42,7 +46,7 @@ python3 samples/pack-rear-card.py
 
 不计算自定义哈希或摘要，不做 JS AST、安全扫描、危险 API 黑名单或脚本执行检查。仅检查 ZIP、路径和 HTML / XML 格式。请使用你愿意在系统卡片环境中执行的脚本。
 
-## 外部 Intent（API 1）
+## 前台 Intent（API 2）
 
 调用方使用自己的 FileProvider 提供整个 ZIP，并授予读取权限。
 
@@ -52,20 +56,68 @@ val intent = Intent("dev.finall.rearcardbridge.action.UPDATE_CONTENT").apply {
     setDataAndType(packageUri, "application/zip")
     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     clipData = ClipData.newRawUri("card package", packageUri)
-    putExtra("api_version", 1)
+    putExtra("api_version", 2)
     putExtra("request_id", requestId)
+    putExtra("key", "weather") // 可省略，默认来源 App 包名
 }
 launcher.launch(intent)
 ```
 
-也支持 `ACTION_SEND` 的 `EXTRA_STREAM` ZIP 分享。旧的 `REPLACE_CARD` action 保留为导入更新的别名，不再直接替换目标资源。
+也支持 `ACTION_SEND` 的 `EXTRA_STREAM` ZIP 分享。自定义更新入口要求 `api_version=2`，不提供旧 action 别名。
 
-Activity 返回 `request_id`、`status`、`message`、`card_id`。导入返回 `SAVED`；首次写入载体返回 `CARRIER_WRITTEN`；手动打开设置返回 `SETTINGS_OPENED`。不返回 `APPLIED`。调用方在桥接 Activity 退出时取得结果。
+正式集成请使用 Activity Result（`launcher.launch` / `startActivityForResult`），系统提供的 `callingPackage` 用于确定来源；不使用调用方填写的包名、referrer 或 URI authority。普通 `ACTION_SEND` 或无法确认调用者的启动方式，需要用户在分组列表明确选择已有分组，才会导入，不猜测来源。强制复用已有 Activity 的新 Intent 同样按无法确认来源处理。
+
+Activity 返回 `request_id`、`status`、`message`、`card_id`、`key`、`revision`。已绑定组导入返回 `SAVED`；未绑定组暂存返回 `BINDING_REQUIRED`；首次写入载体返回 `CARRIER_WRITTEN`；手动打开设置返回 `SETTINGS_OPENED`。不返回 `APPLIED`。调用方在桥接 Activity 退出时取得最后一次操作结果。
+
+## 后台更新（API 2）
+
+后台入口是独立的 `ContentProvider.call()`，不调用 Activity、前台服务、通知或 Shizuku；没有绑定时只返回错误，不自动弹出配置页面。调用方应在自己的 IO 线程同步调用，并在调用期间保持 ZIP 可读。
+
+```kotlin
+// 在调用方的后台/IO线程中执行；后台调用不会自动传递 URI 授权。
+val bridgePackage = "dev.finall.rearcardbridge"
+context.grantUriPermission(bridgePackage, packageUri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+try {
+    val result = context.contentResolver.call(
+        Uri.parse("content://dev.finall.rearcardbridge.update"),
+        "update_content", null,
+        Bundle().apply {
+            putInt("api_version", 2)
+            putParcelable("package_uri", packageUri)
+            putString("request_id", requestId)
+            putString("key", "weather") // 与前台首次绑定一致；可省略
+        },
+    )
+    // status=SAVED 表示保存完成，不表示背屏已执行。
+} finally {
+    context.revokeUriPermission(bridgePackage, packageUri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+}
+```
+
+调用方如果启用了包可见性过滤，可在自己的 manifest 中加入：
+
+```xml
+<queries>
+    <provider android:authorities="dev.finall.rearcardbridge.update" />
+</queries>
+```
+
+Binder 调用身份确定来源包名；无法唯一确定来源（含共享 UID）返回 `CALLER_UNKNOWN`。返回字段包括 `request_id`、`status`、`message`，来源解析后包括 `key`，找到绑定后包括 `card_id`，保存成功包括 `revision`。
+
+- `SAVED`：该组内容保存完成。
+- `BINDING_REQUIRED`：来源 / key 尚未绑定或已恢复取消绑定；需用户主动走前台配置。
+- `USER_LOCKED`：用户存储不可用时的保护性返回。重启后首次解锁前，系统也可能直接拒绝启动 Provider，调用方需处理接口不可用异常。
+- `URI_PERMISSION_DENIED`：未授予桥接 App ZIP 读取权限。
+- `INVALID_INPUT` / `ERROR`：协议、ZIP 或存储操作失败。
+
+设备本次开机解锁过后，重新锁屏无需解锁即可调用；不点亮屏幕、不拉起桥接界面。背屏休眠时仍可能延后到点亮才读取。调用方自身能否获得后台执行机会取决于 Android / 系统省电策略。此版本不支持首次解锁前的 Direct Boot 更新。
+
+动态更新仍只刷新脚本，不刷新载体内的图片、字体等静态文件。静态资源变化时需要在前台重新安装同一组载体，并手动重新应用。
 
 ## 持久化接口与备份
 
 ```text
-content://dev.finall.rearcardbridge.live/current
+content://dev.finall.rearcardbridge.live/bindings/<内部bindingId>/current
 columns: payload, revision, name
 payload: {"revision": 1, "script": "..."}
 ```
@@ -84,6 +136,8 @@ payload: {"revision": 1, "script": "..."}
 ## 构建与适配
 
 需要 JDK 17 或更新版本和 Android SDK 37，本机使用 JDK 21。
+
+Debug 和 Release 均使用仓库相对路径 `signing/release.jks` 内的签名，不使用默认 debug key。构建从 `signing/keychain.properties` 读取 `keyAlias`、`keychainService`、`keychainAccount`，再从 macOS 钥匙串读取密码。整个 `signing/` 目录被 Git 忽略，不提交密钥、本机配置或密码。构建前需自行准备这些本地文件；文件缺失或钥匙串不可访问会中止构建。安装使用 `adb install -r` 覆盖保留数据，不以卸载绕过签名冲突。
 
 ```sh
 ./gradlew :app:assembleDebug :app:assembleRelease :app:testDebugUnitTest

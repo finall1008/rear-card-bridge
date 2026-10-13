@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -15,7 +17,43 @@ android {
     }
     buildFeatures { compose = true; aidl = true; buildConfig = true }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
-    buildTypes { release { isMinifyEnabled = false } }
+    // Local signing files are ignored by Git; never fall back to another signing key.
+    val finallKeystore = rootProject.file("signing/release.jks")
+    val keychainConfigFile = rootProject.file("signing/keychain.properties")
+    check(keychainConfigFile.isFile) { "Missing signing/keychain.properties." }
+    val keychainConfig = Properties().apply {
+        keychainConfigFile.inputStream().use { load(it) }
+    }
+    fun signingProperty(name: String): String =
+        requireNotNull(keychainConfig.getProperty(name)?.takeIf { it.isNotBlank() }) {
+            "Missing $name in signing/keychain.properties."
+        }
+    check(finallKeystore.isFile) {
+        "Missing finall signing keystore: $finallKeystore. Do not replace it with the default debug key."
+    }
+    run {
+        val keychain = providers.exec {
+            commandLine("/usr/bin/security", "find-generic-password",
+                "-s", signingProperty("keychainService"),
+                "-a", signingProperty("keychainAccount"), "-w")
+            isIgnoreExitValue = true
+        }
+        check(keychain.result.get().exitValue == 0) {
+            "Cannot read finall signing password from macOS Keychain; refusing to use a different signing key."
+        }
+        val password = keychain.standardOutput.asText.get().trimEnd('\r', '\n')
+        check(password.isNotEmpty()) { "The finall signing password is empty." }
+        val finall = signingConfigs.create("finall") {
+            storeFile = finallKeystore
+            storePassword = password
+            keyAlias = signingProperty("keyAlias")
+            keyPassword = password
+        }
+        buildTypes {
+            debug { signingConfig = finall }
+            release { signingConfig = finall; isMinifyEnabled = false }
+        }
+    }
 }
 kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }
 dependencies {

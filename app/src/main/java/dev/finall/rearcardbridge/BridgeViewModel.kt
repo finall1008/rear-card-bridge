@@ -2,10 +2,12 @@ package dev.finall.rearcardbridge
 
 import android.app.Application
 import android.net.Uri
-import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import dev.finall.rearcardbridge.live.ContentBinding
+import dev.finall.rearcardbridge.live.ContentOperations
 import dev.finall.rearcardbridge.live.LiveContentStore
+import dev.finall.rearcardbridge.live.PackageImporter
 import dev.finall.rearcardbridge.model.BridgeUiState
 import dev.finall.rearcardbridge.model.OperationResult
 import dev.finall.rearcardbridge.model.ShizukuStatus
@@ -26,24 +28,22 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
     private val client = ShizukuCardClient(application)
     private val builder = CardPackageBuilder()
     private val contentStore = LiveContentStore(application)
-    private val preferences = application.getSharedPreferences("carrier", 0)
-    private val mutableState = MutableStateFlow(BridgeUiState(
-        boundCardId = preferences.getString("id", null),
-        boundCardTitle = preferences.getString("title", null),
-        selectedCardId = preferences.getString("id", null),
-    ))
+    private val importer = PackageImporter(application)
+    private val mutableState = MutableStateFlow(BridgeUiState())
     val state = mutableState.asStateFlow()
     private val operationLock = Mutex()
+    private var pendingUri: Uri? = null
     var onOperationResult: ((OperationResult, String?) -> Unit)? = null
     var onOpenRearSettingsRequested: ((String?) -> OperationResult)? = null
 
     init {
         application.getExternalFilesDir(null)
         runOperation(queue = true) {
-            val saved = withContext(Dispatchers.IO) { contentStore.current() }
-            if (saved != null) mutableState.update { it.copy(packageName = saved.name,
-                packageEntries = saved.entries, contentRevision = saved.revision,
-                status = "${saved.name} · 已保存版本 ${saved.revision}") }
+            val group = withContext(Dispatchers.IO) {
+                contentStore.bindings().firstOrNull()
+                    ?: contentStore.createGroup(application.packageName, application.packageName)
+            }
+            loadGroup(group)
         }
         viewModelScope.launch {
             client.state.collect { connection ->
@@ -65,75 +65,115 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
     fun dismissError() { mutableState.update { it.copy(error = null) } }
     fun rejectInput(message: String) { mutableState.update { it.copy(error = message) } }
 
+    fun selectGroup(id: String) = runOperation {
+        val group = withContext(Dispatchers.IO) { contentStore.bindings().first { it.id == id } }
+        loadGroup(group)
+        pendingUri?.let { uri -> importPackage(uri, group); pendingUri = null }
+    }
+
+    fun receiveExternal(uri: Uri, source: String?, key: String?) = runOperation(queue = true) {
+        require(key == null || key.isNotBlank()) { "key 不能为空。" }
+        if (source == null) {
+            pendingUri = uri
+            mutableState.update { it.copy(status = "无法确认分享来源，请选择一个内容分组后导入。") }
+            return@runOperation
+        }
+        pendingUri = null
+        val group = withContext(Dispatchers.IO) { contentStore.createGroup(source, key ?: source) }
+        loadGroup(group)
+        importPackage(uri, group)
+    }
+
+    fun receivePackage(uri: Uri) = runOperation(queue = true) {
+        val group = withContext(Dispatchers.IO) {
+            contentStore.bindings().first { it.id == state.value.activeGroupId }
+        }
+        importPackage(uri, group)
+    }
+
+    private suspend fun importPackage(uri: Uri, group: ContentBinding) {
+        val saved = withContext(Dispatchers.IO) {
+            synchronized(ContentOperations.lock) { importer.import(uri, group.id) }
+        }
+        loadGroup(group)
+        recordResult(OperationResult(group.cardId != null,
+            if (group.cardId != null) "SAVED" else "BINDING_REQUIRED",
+            if (group.cardId != null) "${saved.name} · 已保存版本 ${saved.revision}"
+            else "内容已暂存，请为此来源 / key 选择目标并安装载体。"), group.cardId)
+    }
+
+    private suspend fun loadGroup(group: ContentBinding) {
+        val (groups, saved) = withContext(Dispatchers.IO) {
+            contentStore.bindings() to contentStore.current(group.id)
+        }
+        mutableState.update { it.copy(groups = groups, activeGroupId = group.id,
+            sourcePackage = group.sourcePackage, contentKey = group.key,
+            boundCardId = group.cardId, boundCardTitle = group.cardTitle,
+            selectedCardId = group.cardId, packageName = saved?.name,
+            packageEntries = saved?.entries.orEmpty(), contentRevision = saved?.revision ?: 0,
+            status = if (group.cardId == null) "请选择此分组的替换目标。" else "已绑定「${group.cardTitle}」") }
+    }
+
     fun refresh() = runOperation(queue = true) {
         val cards = withContext(Dispatchers.IO) { client.listCards() }
         mutableState.update { old -> old.copy(cards = cards,
             selectedCardId = old.selectedCardId?.takeIf { id -> cards.any { it.id == id && it.canReplace } },
             status = "${cards.size} 个载体资源") }
-    }
-
-    // Importing is a local publish operation, independent of Shizuku and the native card database.
-    fun receivePackage(uri: Uri) = runOperation(queue = true) {
-        require(uri.scheme == "content") { "仅接受 content:// ZIP 文件。" }
-        val saved = withContext(Dispatchers.IO) {
-            val resolver = getApplication<Application>().contentResolver
-            val name = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
-                if (it.moveToFirst()) it.getString(0) else null
-            } ?: "card.zip"
-            val file = File.createTempFile("incoming-", ".zip", getApplication<Application>().cacheDir)
-            try {
-                requireNotNull(resolver.openInputStream(uri)) { "无法读取 ZIP 文件。" }.use { source ->
-                    file.outputStream().use { source.copyTo(it) }
-                }
-                val entries = builder.inspect(file)
-                val script = builder.extractScript(file)
-                contentStore.save(name, entries, script, file)
-            } finally { file.delete() }
-        }
-        mutableState.update { it.copy(packageName = saved.name, packageEntries = saved.entries,
-            contentRevision = saved.revision) }
-        recordResult(OperationResult(true, "SAVED", "${saved.name} · 已保存版本 ${saved.revision}"), state.value.boundCardId)
+        reloadActive()
     }
 
     fun installCarrier() = runOperation {
+        val groupId = requireNotNull(state.value.activeGroupId)
         val id = requireNotNull(state.value.selectedCardId) { "请选择载体卡片。" }
         val card = state.value.cards.firstOrNull { it.id == id && it.canReplace }
             ?: error("目标不可写，请刷新资源。")
         val result = withContext(Dispatchers.IO) {
-            val output = File.createTempFile("carrier-", ".zip", getApplication<Application>().cacheDir)
-            try {
-                builder.buildLiveCarrier(contentStore.archive(), output, id)
-                client.replaceCard(id, output)
-            } finally { output.delete() }
+            synchronized(ContentOperations.lock) {
+                val groups = contentStore.bindings()
+                val active = groups.first { it.id == groupId }
+                require(active.cardId == null || active.cardId == id) { "更换目标前请先恢复原来的载体。" }
+                require(groups.none { it.id != groupId && it.cardId == id }) {
+                    "这张卡片已绑定其他分组，请选择其他目标。"
+                }
+                val output = File.createTempFile("carrier-", ".zip", getApplication<Application>().cacheDir)
+                try {
+                    builder.buildLiveCarrier(contentStore.archive(groupId), output, id,
+                        "content://dev.finall.rearcardbridge.live/bindings/$groupId/current")
+                    client.replaceCard(id, output).also { result ->
+                        if (result.success) contentStore.bind(groupId, id, card.title)
+                    }
+                } finally { output.delete() }
+            }
         }
         if (!result.success) { recordResult(result, id); return@runOperation }
-        preferences.edit().putString("id", id).putString("title", card.title).apply()
-        mutableState.update { it.copy(boundCardId = id, boundCardTitle = card.title, lastReplacedCardId = id) }
+        reloadActive()
         recordResult(OperationResult(true, "CARRIER_WRITTEN", "动态载体已写入「${card.title}」"), id)
         openSettingsAfterWrite(id)
         refreshAfterChange()
     }
 
     fun restore(id: String) = runOperation {
-        val result = withContext(Dispatchers.IO) { client.restoreCard(id) }
-        recordResult(result, id)
-        if (result.success) {
-            if (state.value.boundCardId == id) {
-                preferences.edit().clear().apply()
-                mutableState.update { it.copy(boundCardId = null, boundCardTitle = null) }
+        val result = withContext(Dispatchers.IO) {
+            synchronized(ContentOperations.lock) {
+                client.restoreCard(id).also { if (it.success) contentStore.unbindCard(id) }
             }
-            openSettingsAfterWrite(id)
-            refreshAfterChange()
         }
+        recordResult(result, id)
+        if (result.success) { reloadActive(); openSettingsAfterWrite(id); refreshAfterChange() }
     }
 
+    fun reload() = runOperation(queue = true) { reloadActive() }
+    private suspend fun reloadActive() {
+        val group = withContext(Dispatchers.IO) {
+            contentStore.bindings().firstOrNull { it.id == state.value.activeGroupId }
+        }
+        if (group != null) loadGroup(group)
+    }
     fun openRearSettings(id: String? = state.value.boundCardId) = runOperation {
         recordResult(requestRearSettings(id), id)
     }
     private fun requestRearSettings(id: String?): OperationResult =
-        onOpenRearSettingsRequested?.invoke(id)
-            ?: OperationResult(false, "ERROR", "无法打开背屏设置。")
-
+        onOpenRearSettingsRequested?.invoke(id) ?: OperationResult(false, "ERROR", "无法打开背屏设置。")
     private fun openSettingsAfterWrite(id: String) {
         val result = requestRearSettings(id)
         if (!result.success) mutableState.update { it.copy(error = result.message) }
@@ -143,12 +183,11 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
             val cards = withContext(Dispatchers.IO) { client.listCards() }
             mutableState.update { it.copy(cards = cards) }
         } catch (cancelled: CancellationException) { throw cancelled }
-        catch (error: Exception) {
-            mutableState.update { it.copy(error = "资源操作已完成，但刷新列表失败：${error.message}") }
-        }
+        catch (error: Exception) { mutableState.update { it.copy(error = "资源操作已完成，但刷新列表失败：${error.message}") } }
     }
     private fun recordResult(result: OperationResult, cardId: String? = state.value.boundCardId) {
-        mutableState.update { it.copy(status = result.message, error = result.message.takeUnless { result.success }) }
+        mutableState.update { it.copy(status = result.message,
+            error = result.message.takeUnless { result.success || result.code == "BINDING_REQUIRED" }) }
         onOperationResult?.invoke(result, cardId)
     }
     private fun runOperation(queue: Boolean = false, block: suspend () -> Unit) {
@@ -158,15 +197,10 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
                 mutableState.update { it.copy(busy = true, error = null) }
                 try { block() }
                 catch (cancelled: CancellationException) { throw cancelled }
-                catch (error: Exception) {
-                    recordResult(OperationResult(false, "ERROR", error.message ?: "操作失败"))
-                } finally { mutableState.update { it.copy(busy = false) } }
+                catch (error: Exception) { recordResult(OperationResult(false, "ERROR", error.message ?: "操作失败")) }
+                finally { mutableState.update { it.copy(busy = false) } }
             }
         }
     }
-    override fun onCleared() {
-        onOperationResult = null
-        onOpenRearSettingsRequested = null
-        client.close()
-    }
+    override fun onCleared() { onOperationResult = null; onOpenRearSettingsRequested = null; client.close() }
 }

@@ -17,6 +17,10 @@ data class OperationResult(val success: Boolean, val code: String, val message: 
 data class BridgeUiState(
     val shizuku: ShizukuState = ShizukuState(ShizukuStatus.NOT_RUNNING),
     val cards: List<CardInfo> = emptyList(),
+    val groups: List<dev.finall.rearcardbridge.live.ContentBinding> = emptyList(),
+    val activeGroupId: String? = null,
+    val sourcePackage: String? = null,
+    val contentKey: String? = null,
     val selectedCardId: String? = null,
     val packageName: String? = null,
     val packageEntries: List<String> = emptyList(),

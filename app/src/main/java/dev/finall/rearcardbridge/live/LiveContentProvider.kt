@@ -13,8 +13,11 @@ class LiveContentProvider : ContentProvider() {
 
     override fun query(uri: Uri, projection: Array<out String>?, selection: String?,
         selectionArgs: Array<out String>?, sortOrder: String?): Cursor {
-        require(uri.authority == LiveContentContract.AUTHORITY && uri.path == "/current") { "未知内容地址。" }
-        val snapshot = LiveContentStore(requireNotNull(context)).current()
+        require(uri.authority == LiveContentContract.AUTHORITY) { "未知内容地址。" }
+        val segments = uri.pathSegments
+        require(segments.size == 3 && segments[0] == "bindings" && segments[2] == "current") { "未知内容地址。" }
+        val id = segments[1]
+        val snapshot = LiveContentStore(requireNotNull(context)).current(id)
         val payload = snapshot?.payload() ?: JSONObject().put("revision", 0).put("script", "").toString()
         val columns = projection ?: arrayOf(LiveContentContract.COLUMN_PAYLOAD, "revision", "name")
         val row = columns.map { column ->
@@ -27,7 +30,7 @@ class LiveContentProvider : ContentProvider() {
         }.toTypedArray<Any>()
         return MatrixCursor(columns).apply {
             addRow(row)
-            setNotificationUri(requireNotNull(context).contentResolver, LiveContentContract.CURRENT_URI)
+            setNotificationUri(requireNotNull(context).contentResolver, uri)
         }
     }
 

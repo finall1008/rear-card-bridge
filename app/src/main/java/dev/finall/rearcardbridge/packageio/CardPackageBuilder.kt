@@ -39,13 +39,21 @@ class CardPackageBuilder {
 
     fun extractScript(input: File): String = openZip(input).use { parse(it).combinedScript }
 
-    fun buildLiveCarrier(input: File?, output: File, cardId: String): PreparedCardPackage {
+    fun buildLiveCarrier(
+        input: File?,
+        output: File,
+        cardId: String,
+        contentUri: String,
+    ): PreparedCardPackage {
         val name = jsCanvasName(cardId)
         require(!output.isDirectory) { "输出路径是目录" }
         if (input != null) {
             require(!sameFile(input, output)) { "输出文件不能与输入压缩包相同" }
             openZip(input).use { zip ->
-                return PreparedCardPackage(output, writePackage(zip, parse(zip), output, name, live = true))
+                return PreparedCardPackage(
+                    output,
+                    writePackage(zip, parse(zip), output, name, live = true, contentUri = contentUri),
+                )
             }
         }
         val parent = requireNotNull(output.absoluteFile.parentFile)
@@ -54,7 +62,7 @@ class CardPackageBuilder {
         try {
             ZipOutputStream(tmp.outputStream()).use { zip ->
                 zip.putNextEntry(ZipEntry("manifest.xml"))
-                zip.write(liveManifestXml(name).toByteArray(Charsets.UTF_8))
+                zip.write(liveManifestXml(name, contentUri).toByteArray(Charsets.UTF_8))
                 zip.closeEntry()
             }
             moveReplace(tmp, output)
@@ -196,6 +204,7 @@ class CardPackageBuilder {
         output: File,
         canvasName: String,
         live: Boolean = false,
+        contentUri: String? = null,
     ): List<String> {
         val parent = output.absoluteFile.parentFile
             ?: throw IllegalArgumentException("无法写入输出压缩包：没有父目录")
@@ -206,8 +215,10 @@ class CardPackageBuilder {
         val entryNames = ArrayList<String>(loaded.copyPlan.size + 1)
         try {
             ZipOutputStream(tmp.outputStream()).use { out ->
-                val manifest = (if (live) liveManifestXml(canvasName) else manifestXml(canvasName, loaded.combinedScript))
-                    .toByteArray(Charsets.UTF_8)
+                val manifest = (
+                    if (live) liveManifestXml(canvasName, requireNotNull(contentUri))
+                    else manifestXml(canvasName, loaded.combinedScript)
+                ).toByteArray(Charsets.UTF_8)
                 out.putNextEntry(ZipEntry("manifest.xml"))
                 out.write(manifest)
                 out.closeEntry()
@@ -244,15 +255,15 @@ class CardPackageBuilder {
         append("</Widget>\n")
     }
 
-    private fun liveManifestXml(canvasName: String): String = """
+    private fun liveManifestXml(canvasName: String, contentUri: String): String = """
         <?xml version="1.0" encoding="UTF-8"?>
         <Widget version="2" frameRate="30" screenWidth="912" clearCanvas="true">
           <VariableBinders>
-            <ContentProviderBinder name="bridge_live_source" uri="content://dev.finall.rearcardbridge.live/current" columns="payload" updateInterval="1">
+            <ContentProviderBinder name="bridge_live_source" uri="${xmlAttr(contentUri)}" columns="payload" updateInterval="1">
               <Variable name="bridge_live_payload" type="string" column="payload" row="0"/>
             </ContentProviderBinder>
           </VariableBinders>
-          <JsCanvas name="$canvasName" w="#view_width" h="#view_height">
+          <JsCanvas name="${xmlAttr(canvasName)}" w="#view_width" h="#view_height">
             <HostVar name="bridge_live_payload" type="string"/>
             <Script>${cdata(LiveCarrierRuntime.script(canvasName))}</Script>
           </JsCanvas>
@@ -387,6 +398,19 @@ class CardPackageBuilder {
         private fun cdata(script: String): String {
             val body = script.replace("]]>", "]]]]><![CDATA[>")
             return "<![CDATA[\n$body\n]]>"
+        }
+
+        private fun xmlAttr(value: String): String = buildString(value.length) {
+            for (ch in value) {
+                when (ch) {
+                    '&' -> append("&amp;")
+                    '<' -> append("&lt;")
+                    '>' -> append("&gt;")
+                    '"' -> append("&quot;")
+                    '\'' -> append("&apos;")
+                    else -> append(ch)
+                }
+            }
         }
 
         private fun jsCanvasName(cardId: String): String {

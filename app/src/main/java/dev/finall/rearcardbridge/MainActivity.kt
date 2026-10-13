@@ -27,7 +27,9 @@ class MainActivity : ComponentActivity() {
             setResult(if (result.success) Activity.RESULT_OK else Activity.RESULT_CANCELED,
                 Intent().putExtra(EXTRA_REQUEST_ID, requestId)
                     .putExtra("status", result.code).putExtra("message", result.message)
-                    .putExtra("card_id", cardId))
+                    .putExtra("card_id", cardId)
+                    .putExtra("key", viewModel.state.value.contentKey)
+                    .putExtra("revision", viewModel.state.value.contentRevision))
         }
         viewModel.onOpenRearSettingsRequested = ::openRearSettings
         setContent {
@@ -37,25 +39,31 @@ class MainActivity : ComponentActivity() {
                 onPickPackage = { pickPackage.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream")) },
                 onSelectCard = viewModel::selectCard, onInstallCarrier = viewModel::installCarrier,
                 onRestore = viewModel::restore, onOpenRearSettings = viewModel::openRearSettings,
-                onDismissError = viewModel::dismissError)
+                onDismissError = viewModel::dismissError,
+                onSelectGroup = viewModel::selectGroup)
         }
         if (savedInstanceState == null) handleIntent(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        viewModel.reload()
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        handleIntent(intent)
+        handleIntent(intent, null)
     }
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putString(EXTRA_REQUEST_ID, requestId)
         super.onSaveInstanceState(outState)
     }
-    private fun handleIntent(intent: Intent) {
+    private fun handleIntent(intent: Intent, sourcePackage: String? = callingPackage) {
         val uri: Uri? = when (intent.action) {
-            ACTION_UPDATE_CONTENT, ACTION_REPLACE_CARD -> {
-                if (intent.getIntExtra("api_version", 1) != 1) {
-                    viewModel.rejectInput("不支持的 api_version；当前版本为 1。")
+            ACTION_UPDATE_CONTENT -> {
+                if (intent.getIntExtra("api_version", 0) != 2) {
+                    viewModel.rejectInput("不支持的 api_version；请使用 2。")
                     return
                 }
                 intent.data
@@ -63,7 +71,7 @@ class MainActivity : ComponentActivity() {
             Intent.ACTION_SEND -> intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
             else -> null
         }
-        if (intent.action == ACTION_UPDATE_CONTENT || intent.action == ACTION_REPLACE_CARD || intent.action == Intent.ACTION_SEND) {
+        if (intent.action == ACTION_UPDATE_CONTENT || intent.action == Intent.ACTION_SEND) {
             if (viewModel.state.value.busy && viewModel.state.value.packageName != null) {
                 viewModel.rejectInput("正在处理上一项操作，请结束后重新传入 ZIP。")
                 return
@@ -71,7 +79,7 @@ class MainActivity : ComponentActivity() {
             requestId = intent.getStringExtra(EXTRA_REQUEST_ID)
             setResult(Activity.RESULT_CANCELED)
             if (uri == null) viewModel.rejectInput("Intent 未包含整包 content:// URI。")
-            else viewModel.receivePackage(uri)
+            else viewModel.receiveExternal(uri, sourcePackage, intent.getStringExtra("key"))
         }
     }
     private fun openRearSettings(cardId: String?): OperationResult {
@@ -96,7 +104,6 @@ class MainActivity : ComponentActivity() {
     }
     companion object {
         const val ACTION_UPDATE_CONTENT = "dev.finall.rearcardbridge.action.UPDATE_CONTENT"
-        const val ACTION_REPLACE_CARD = "dev.finall.rearcardbridge.action.REPLACE_CARD"
         const val EXTRA_REQUEST_ID = "request_id"
     }
 }

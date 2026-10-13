@@ -34,8 +34,9 @@ fun BridgeScreen(
     onRestore: (String) -> Unit,
     onOpenRearSettings: (String?) -> Unit,
     onDismissError: () -> Unit,
+    onSelectGroup: (String) -> Unit,
 ) {
-    var showSetup by remember { mutableStateOf(state.boundCardId == null) }
+    var showSetup by remember(state.activeGroupId, state.boundCardId) { mutableStateOf(state.boundCardId == null) }
     var showEntries by remember { mutableStateOf(false) }
     var confirmInstall by remember { mutableStateOf(false) }
     var confirmRestore by remember { mutableStateOf(false) }
@@ -49,6 +50,17 @@ fun BridgeScreen(
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
+                item {
+                    Card(Modifier.fillMaxWidth()) {
+                        BasicComponent(title = "内容分组", summary = "来源 App / key → 目标卡片；各组独立更新")
+                        state.groups.forEach { group ->
+                            BasicComponent(title = group.sourcePackage,
+                                summary = "${group.key} → ${group.cardTitle ?: "待选择目标"}",
+                                endActions = { RadioButton(selected = group.id == state.activeGroupId, onClick = null) },
+                                onClick = { onSelectGroup(group.id) }, enabled = !state.busy)
+                        }
+                    }
+                }
                 item {
                     Card(Modifier.fillMaxWidth()) {
                         BasicComponent(title = "当前内容", summary = state.packageName?.let {
