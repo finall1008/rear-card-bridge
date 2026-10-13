@@ -9,6 +9,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
+import dev.finall.rearcardbridge.live.CarrierResourceState
 import dev.finall.rearcardbridge.model.BridgeUiState
 import dev.finall.rearcardbridge.model.ShizukuStatus
 import top.yukonga.miuix.kmp.basic.BasicComponent
@@ -35,6 +36,7 @@ fun BridgeScreen(
     onOpenRearSettings: (String?) -> Unit,
     onDismissError: () -> Unit,
     onSelectGroup: (String) -> Unit,
+    onConfirmReapplied: () -> Unit,
 ) {
     var showSetup by remember(state.activeGroupId, state.boundCardId) { mutableStateOf(state.boundCardId == null) }
     var showEntries by remember { mutableStateOf(false) }
@@ -42,6 +44,9 @@ fun BridgeScreen(
     var confirmRestore by remember { mutableStateOf(false) }
     val ready = state.shizuku.status == ShizukuStatus.READY
     val selected = state.cards.firstOrNull { it.id == state.selectedCardId }
+    val resources = state.carrierResources
+    val needsResourceUpdate = resources?.state == CarrierResourceState.UPDATE_REQUIRED ||
+        resources?.state == CarrierResourceState.UNKNOWN
     val themeController = remember { ThemeController() }
     MiuixTheme(controller = themeController) {
         Scaffold(topBar = { TopAppBar(title = "背屏卡片桥") }) { padding ->
@@ -88,6 +93,26 @@ fun BridgeScreen(
                         BasicComponent(title = state.boundCardTitle?.let { "载体：$it" } ?: "尚未绑定载体",
                             summary = state.boundCardId,
                             onClick = { showSetup = !showSetup })
+                        if (resources != null) {
+                            BasicComponent(title = "静态资源", summary = resources.message)
+                            if (needsResourceUpdate) {
+                                Button(onClick = { confirmInstall = true },
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 12.dp),
+                                    colors = ButtonDefaults.buttonColorsPrimary(),
+                                    enabled = ready && !state.busy && selected?.canReplace == true &&
+                                        selected.id == state.boundCardId) { Text("更新载体资源") }
+                                if (!ready) Text("请展开配置载体，连接 Shizuku 后更新。",
+                                    modifier = Modifier.padding(horizontal = 16.dp).padding(bottom = 12.dp))
+                            }
+                            if (resources.state == CarrierResourceState.REAPPLY_REQUIRED) {
+                                Button(onClick = { onOpenRearSettings(state.boundCardId) },
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 12.dp),
+                                    enabled = !state.busy) { Text("打开背屏设置") }
+                                Button(onClick = onConfirmReapplied,
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 12.dp),
+                                    enabled = !state.busy) { Text("我已移除旧卡并重新应用") }
+                            }
+                        }
                         Button(onClick = { showSetup = !showSetup },
                             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 16.dp),
                             enabled = !state.busy) { Text(if (showSetup) "收起载体设置" else "配置载体") }
@@ -95,7 +120,7 @@ fun BridgeScreen(
                 }
                 if (showSetup) {
                     item {
-                        Text("载体安装 · 首次设置", style = MiuixTheme.textStyles.title4)
+                        Text(if (state.boundCardId == null) "载体安装 · 首次设置" else "载体设置", style = MiuixTheme.textStyles.title4)
                         Spacer(Modifier.height(8.dp))
                         Card(Modifier.fillMaxWidth()) {
                             BasicComponent(title = when (state.shizuku.status) {
@@ -130,7 +155,7 @@ fun BridgeScreen(
                             Button(onClick = { confirmInstall = true }, modifier = Modifier.fillMaxWidth(),
                                 colors = ButtonDefaults.buttonColorsPrimary(),
                                 enabled = ready && !state.busy && selected?.canReplace == true) {
-                                Text("安装并绑定动态载体")
+                                Text(if (state.boundCardId != null) "更新载体资源" else "安装并绑定动态载体")
                             }
                             Button(onClick = { onOpenRearSettings(selected?.id ?: state.boundCardId) },
                                 modifier = Modifier.fillMaxWidth(), enabled = !state.busy) { Text("打开背屏设置") }
@@ -144,8 +169,9 @@ fun BridgeScreen(
                 item { Text(if (state.busy) "正在处理…" else state.status) }
             }
         }
-        WindowDialog(show = confirmInstall, title = "绑定「${selected?.title.orEmpty()}」？",
-            summary = "备份并写入固定载体包，首次在系统里重新应用这张卡。",
+        WindowDialog(show = confirmInstall,
+            title = if (state.boundCardId != null) "更新「${selected?.title.orEmpty()}」的载体资源？" else "绑定「${selected?.title.orEmpty()}」？",
+            summary = "写入最新载体包后，请到「我生成的」移除旧卡并重新应用。",
             onDismissRequest = { confirmInstall = false }) {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(onClick = { confirmInstall = false }, modifier = Modifier.weight(1f)) { Text("取消") }

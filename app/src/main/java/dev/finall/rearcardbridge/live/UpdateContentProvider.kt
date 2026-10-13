@@ -41,10 +41,21 @@ class UpdateContentProvider : ContentProvider() {
                 if (group?.cardId == null) return@synchronized failure("BINDING_REQUIRED", "请先通过前台入口选择并绑定目标。")
                 result.putString("card_id", group.cardId)
                 val saved = PackageImporter(context).import(uri, group.id)
+                val resources = store.resourceStatus(group.id)
                 result.apply {
                     putString("status", "SAVED")
-                    putString("message", "内容已保存；背屏读取时间由系统载体决定。")
+                    putString("message", "内容已保存；背屏读取时间由系统载体决定。${resources.message}")
                     putLong("revision", saved.revision)
+                    putString("carrier_resource_status", resources.state.name)
+                    if (resources.state != CarrierResourceState.UNKNOWN) {
+                        putBoolean("carrier_update_required", resources.state == CarrierResourceState.UPDATE_REQUIRED)
+                    }
+                    putBoolean("reapply_confirmation_pending", resources.state == CarrierResourceState.REAPPLY_REQUIRED)
+                    resources.changes?.let {
+                        putInt("static_resources_added", it.added.size)
+                        putInt("static_resources_modified", it.modified.size)
+                        putInt("static_resources_removed", it.removed.size)
+                    }
                 }
             }
         } catch (error: SecurityException) {

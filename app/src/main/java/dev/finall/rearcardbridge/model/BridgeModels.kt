@@ -27,6 +27,7 @@ data class BridgeUiState(
     val busy: Boolean = false,
     val status: String = "导入内容，背屏载体会读取最新版本。",
     val contentRevision: Long = 0L,
+    val carrierResources: dev.finall.rearcardbridge.live.CarrierResourceStatus? = null,
     val boundCardId: String? = null,
     val boundCardTitle: String? = null,
     val error: String? = null,

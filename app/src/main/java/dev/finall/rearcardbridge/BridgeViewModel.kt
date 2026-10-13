@@ -98,19 +98,23 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
         loadGroup(group)
         recordResult(OperationResult(group.cardId != null,
             if (group.cardId != null) "SAVED" else "BINDING_REQUIRED",
-            if (group.cardId != null) "${saved.name} · 已保存版本 ${saved.revision}"
+            if (group.cardId != null) "${saved.name} · 已保存版本 ${saved.revision}。${state.value.carrierResources?.message.orEmpty()}"
             else "内容已暂存，请为此来源 / key 选择目标并安装载体。"), group.cardId)
     }
 
     private suspend fun loadGroup(group: ContentBinding) {
-        val (groups, saved) = withContext(Dispatchers.IO) {
-            contentStore.bindings() to contentStore.current(group.id)
+        val (groups, saved, resources) = withContext(Dispatchers.IO) {
+            synchronized(ContentOperations.lock) {
+                Triple(contentStore.bindings(), contentStore.current(group.id),
+                    if (group.cardId != null) contentStore.resourceStatus(group.id) else null)
+            }
         }
         mutableState.update { it.copy(groups = groups, activeGroupId = group.id,
             sourcePackage = group.sourcePackage, contentKey = group.key,
             boundCardId = group.cardId, boundCardTitle = group.cardTitle,
             selectedCardId = group.cardId, packageName = saved?.name,
             packageEntries = saved?.entries.orEmpty(), contentRevision = saved?.revision ?: 0,
+            carrierResources = resources,
             status = if (group.cardId == null) "请选择此分组的替换目标。" else "已绑定「${group.cardTitle}」") }
     }
 
@@ -136,13 +140,19 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
                     "这张卡片已绑定其他分组，请选择其他目标。"
                 }
                 val output = File.createTempFile("carrier-", ".zip", getApplication<Application>().cacheDir)
+                val snapshot = File.createTempFile("resources-", ".zip", getApplication<Application>().cacheDir)
                 try {
-                    builder.buildLiveCarrier(contentStore.archive(groupId), output, id,
+                    val archive = contentStore.archive(groupId)
+                    builder.buildLiveCarrier(archive, output, id,
                         "content://dev.finall.rearcardbridge.live/bindings/$groupId/current")
+                    builder.writeStaticResourceSnapshot(archive, snapshot)
                     client.replaceCard(id, output).also { result ->
-                        if (result.success) contentStore.bind(groupId, id, card.title)
+                        if (result.success) {
+                            contentStore.bind(groupId, id, card.title)
+                            contentStore.recordInstalledResources(groupId, snapshot)
+                        }
                     }
-                } finally { output.delete() }
+                } finally { output.delete(); snapshot.delete() }
             }
         }
         if (!result.success) { recordResult(result, id); return@runOperation }
@@ -160,6 +170,13 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
         }
         recordResult(result, id)
         if (result.success) { reloadActive(); openSettingsAfterWrite(id); refreshAfterChange() }
+    }
+
+    fun confirmReapplied() = runOperation {
+        val groupId = requireNotNull(state.value.activeGroupId)
+        withContext(Dispatchers.IO) { contentStore.confirmReapplied(groupId) }
+        reloadActive()
+        mutableState.update { it.copy(status = "已记录你的重新应用确认。") }
     }
 
     fun reload() = runOperation(queue = true) { reloadActive() }

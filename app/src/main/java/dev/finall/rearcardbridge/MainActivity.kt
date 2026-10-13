@@ -40,7 +40,8 @@ class MainActivity : ComponentActivity() {
                 onSelectCard = viewModel::selectCard, onInstallCarrier = viewModel::installCarrier,
                 onRestore = viewModel::restore, onOpenRearSettings = viewModel::openRearSettings,
                 onDismissError = viewModel::dismissError,
-                onSelectGroup = viewModel::selectGroup)
+                onSelectGroup = viewModel::selectGroup,
+                onConfirmReapplied = viewModel::confirmReapplied)
         }
         if (savedInstanceState == null) handleIntent(intent)
     }

@@ -3,6 +3,8 @@ package dev.finall.rearcardbridge.live
 import android.content.Context
 import android.net.Uri
 import android.util.AtomicFile
+import dev.finall.rearcardbridge.packageio.CardPackageBuilder
+import dev.finall.rearcardbridge.packageio.StaticResourceChanges
 import java.io.File
 import java.util.UUID
 import org.json.JSONArray
@@ -20,6 +22,20 @@ data class ContentBinding(val id: String, val sourcePackage: String, val key: St
 
 data class LiveContentSnapshot(val revision: Long, val name: String, val entries: List<String>, val script: String) {
     fun payload(): String = JSONObject().put("revision", revision).put("script", script).toString()
+}
+
+enum class CarrierResourceState { UNKNOWN, CURRENT, UPDATE_REQUIRED, REAPPLY_REQUIRED }
+
+data class CarrierResourceStatus(
+    val state: CarrierResourceState,
+    val changes: StaticResourceChanges? = null,
+) {
+    val message: String get() = when (state) {
+        CarrierResourceState.UNKNOWN -> "尚无资源比对记录，请更新载体以建立快照。"
+        CarrierResourceState.CURRENT -> "静态资源一致，无需重新安装载体。"
+        CarrierResourceState.UPDATE_REQUIRED -> "静态资源有变化：新增 ${changes!!.added.size} 个、修改 ${changes.modified.size} 个、删除 ${changes.removed.size} 个。请更新载体，再移除旧卡并重新应用。"
+        CarrierResourceState.REAPPLY_REQUIRED -> "载体资源已写入，请到「我生成的」移除旧卡并重新应用。"
+    }
 }
 
 /** Each carrier reads a stable internal ID, independent of the externally supplied key. */
@@ -55,7 +71,43 @@ class LiveContentStore(private val context: Context) {
         writeBindings(groups.map { if (it.id == id) it.copy(cardId = cardId, cardTitle = cardTitle) else it })
     }
     fun unbindCard(cardId: String) = synchronized(ContentOperations.lock) {
-        writeBindings(bindings().map { if (it.cardId == cardId) it.copy(cardId = null, cardTitle = null) else it })
+        val groups = bindings()
+        writeBindings(groups.map { if (it.cardId == cardId) it.copy(cardId = null, cardTitle = null) else it })
+        groups.filter { it.cardId == cardId }.forEach {
+            installedResources(it.id).delete()
+            reapplyPending(it.id).delete()
+        }
+    }
+
+    private fun installedResources(id: String) = AtomicFile(File(directory(id), "installed-resources.zip"))
+    private fun reapplyPending(id: String) = AtomicFile(File(directory(id), "reapply-pending.json"))
+
+    fun resourceStatus(id: String): CarrierResourceStatus = synchronized(ContentOperations.lock) {
+        val installed = installedResources(id)
+        if (!exists(installed)) return@synchronized CarrierResourceStatus(CarrierResourceState.UNKNOWN)
+        installed.openRead().close()
+        val changes = CardPackageBuilder().compareStaticResources(archive(id), installed.baseFile)
+        CarrierResourceStatus(when {
+            changes.changed -> CarrierResourceState.UPDATE_REQUIRED
+            exists(reapplyPending(id)) -> CarrierResourceState.REAPPLY_REQUIRED
+            else -> CarrierResourceState.CURRENT
+        }, changes)
+    }
+
+    /** Called only after the carrier has been successfully written. */
+    fun recordInstalledResources(id: String, snapshot: File) = synchronized(ContentOperations.lock) {
+        val dir = directory(id)
+        check(dir.isDirectory || dir.mkdirs()) { "无法创建内容目录。" }
+        writeJson(reapplyPending(id), "{}")
+        val installed = installedResources(id)
+        val out = installed.startWrite()
+        try { snapshot.inputStream().use { it.copyTo(out) }; installed.finishWrite(out) }
+        catch (error: Exception) { installed.failWrite(out); throw error }
+    }
+
+    fun confirmReapplied(id: String) = synchronized(ContentOperations.lock) {
+        require(resourceStatus(id).state == CarrierResourceState.REAPPLY_REQUIRED) { "请先更新载体资源。" }
+        reapplyPending(id).delete()
     }
 
     private fun isGroupId(id: String) = id.matches(Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"))
