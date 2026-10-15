@@ -17,7 +17,7 @@ weather.zip
     └── ...
 ```
 
-`card/` 的编写规则见 [背屏应用卡开发指南](app-card-development.md)：它是 QuickJS + Canvas，不是普通网页。`webroot/` 是运行在 WebView 里的正常网页，可以用任意前端技术，但要提前构建成静态文件——安装时不会执行 npm 或构建脚本。
+`card/` 的编写规则见 [背屏应用卡开发指南](app-card-development.md)：它是 QuickJS + Canvas，不是普通网页。`card/` 下的 JS 源码可以直接用原生 `async / await` 书写（源码保持 async/await，不要手工改写成 then 链），但**打包进 ZIP 前必须用构建工具编译**，见 [发布与安装](#6-发布与安装)。`webroot/` 是运行在 WebView 里的正常网页，可以用任意前端技术，但要提前构建成静态文件——安装时不会执行 npm 或构建脚本。
 
 ### module.json
 
@@ -143,6 +143,24 @@ await bridge.card.requestRefresh();
 bridge.card.onRefresh(function () { refresh(); });
 ```
 
+### 息屏常显快照（卡片必做）
+
+系统每次从息屏恢复常显时都会重建背屏 JS 运行环境，并且只截取最初一两帧，之后就停帧。等桥接返回再画的内容不会出现在常显画面上。卡片必须在脚本同步执行阶段画出上次的内容：
+
+```js
+// 启动时同步读取并立即绘制，放在任何 await 之前
+const snapshot = bridge.card.readSnapshot();   // 没有快照时返回 null
+if (snapshot) render(snapshot);
+
+// 拿到新数据并画完后保存
+bridge.card.saveSnapshot({ profile, images });
+```
+
+- 两个方法都是**同步**的，存储在载体的 `localStorage` 里，运行环境重建后仍然保留；仅背屏卡片提供。
+- 值必须能被 JSON 序列化。内容和已存快照相同时不会重复写入。
+- Data URL 图片可以放进快照，同步阶段设置的图片在常显中能正常显示；体积尽量按显示尺寸控制。
+- 快照格式由模块自己决定，脚本更新后可能读到旧格式，使用前自行校验。
+
 ### 日志
 
 ```js
@@ -184,16 +202,38 @@ image.src = "data:image/png;base64," + res.bodyBase64;
 
 ## 6. 发布与安装
 
-### ZIP 安装
+### ZIP 安装（先编译再打包）
 
-把上述结构打成 ZIP（根目录直接是 module.json，不要多套一层文件夹），用户通过「安装 ZIP 模块」选择文件。
+背屏 `card/` 脚本直接用原生 `async / await` 编写，但打成 ZIP 前**必须**用仓库内的构建工具把 `card/` 下的 JS 编译成纯 JS：宿主 QuickJS 运行时不驱动原生 Promise 微任务，`await` 必须编译为生成器后，才能由运行时提供的全局 Promise 正确执行。
+
+```sh
+# 需要 Node 22.18+（或 24.11+）；首次安装锁定版本的依赖
+cd tools/card-build
+npm ci
+
+# <模块源目录> 的根目录直接是 module.json，<输出 ZIP> 是要安装的包
+node bin/card-build.js <模块源目录> <输出.zip>
+```
+
+在仓库根目录也可以直接 `node tools/card-build/bin/card-build.js <模块源目录> <输出.zip>`。工具自带回归测试：`cd tools/card-build && npm test`。
+
+编译与打包规则：
+
+- 只有 `card/` 下的 `.js` 会交给 Babel 的 `@babel/plugin-transform-async-to-generator` 编译：输出是纯 JS（生成器 + 全局 Promise），不打包、不加 preset-env、不做 AST / 安全分析；语法错误会报出**出错文件**并使构建失败，失败时不写出 ZIP。
+- 源码保持原生 async/await；ZIP 里放的是编译后的纯 JS，运行时通过新运行时在执行模块脚本前注入的全局 `window.Promise` 执行（Babel 生成的 helper 直接使用该全局 Promise）。
+- `module.json`、`icon.png`、`card/` 非 JS 文件和 `webroot/**` 按**原始字节**打包；`webroot/` 是浏览器页面，保持原生 `Promise` / `fetch`，完全不编译。
+- 只收录 `module.json`、`icon.png`、`card/`、`webroot/` 这些模块根；源目录里的 `node_modules`、构建工具、仓库杂物不会进 ZIP。ZIP 的 CRC 由 ZIP 库管理，工具不计算任何自定义哈希或摘要。
+- 旧运行时兼容：编译产物依赖新运行时注入的 Promise。已安装的**旧运行时**没有该注入，无法运行新产物——更新运行时后必须重新构建 ZIP 并**重新生成载体**（更新模块资源、到系统背屏设置重新应用）。
+- 构建工具只在 Node 环境下验证编译与打包；真机背屏运行与联网行为由应用侧另行验证。
+
+把编译好的 ZIP（根目录直接是 module.json，不要多套一层文件夹）通过「安装 ZIP 模块」选择文件。
 
 ### Git 仓库安装
 
-仓库根目录放 module.json 与 card/、webroot/。用户输入仓库地址即可安装；支持 GitHub / GitLab / Gitee 公开仓库，可指定分支（地址里的 `/tree/<branch>` 或单独填写，默认 main）。设置网页必须是构建产物，手机上不执行构建。
+仓库根目录放 module.json 与 card/、webroot/。用户输入仓库地址即可安装；支持 GitHub / GitLab / Gitee 公开仓库，可指定分支（地址里的 `/tree/<branch>` 或单独填写，默认 main）。仓库里的 card/ 脚本也必须是用 `tools/card-build` 编译后的纯 JS 再推送——手机上不执行构建；设置网页必须是构建产物，手机上不执行构建。
 
 同一 id 再次安装即更新；versionCode 不增大会被拒绝。更新保留配置与业务数据，替换包内容。
 
 ## 7. 最小示例
 
-见 [samples/hello-module](../samples/hello-module/)：一个带设置页的计数卡片，演示 config、storage、net 与刷新联动。
+见 [samples/hello-module](../samples/hello-module/)：一个带设置页的计数卡片，演示 config、storage、net 与刷新联动。卡片脚本源码使用原生 async/await，打包前按 [发布与安装](#6-发布与安装) 用 `tools/card-build` 编译。

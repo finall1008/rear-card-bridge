@@ -36,6 +36,20 @@ module.zip
 
 背屏端运行 MAML / QuickJS / Canvas，不是 WebView；设置页运行在卡片桥的 WebView 中。两端共用 `bridge.config`、`bridge.storage`、`bridge.files` 等数据接口。设置页联网直接用 WebView 的 `fetch` / XMLHttpRequest；`bridge.net` 仅用于背屏卡片，详见开发指南。
 
+### 模块构建工具（tools/card-build）
+
+背屏 `card/` 脚本源码直接用原生 `async / await`，但打包进 ZIP 前**必须**用仓库内的构建工具编译成生成器纯 JS：宿主 QuickJS 不驱动原生 Promise 微任务，编译产物执行依赖新运行时在执行模块脚本前注入的全局 `Promise`；`webroot/` 是浏览器页面，保持原生 `Promise` / `fetch`，完全不编译。源码保持 async/await，ZIP 里是编译后的纯 JS。
+
+```sh
+cd tools/card-build
+npm ci        # Node 22.18+（或 24.11+），安装锁定版本的 Babel / fflate
+node bin/card-build.js <模块源目录> <输出.zip>
+# 仓库根目录等价写法：
+# node tools/card-build/bin/card-build.js <模块源目录> <输出.zip>
+```
+
+工具只把 `card/` 下的 `.js` 交给 Babel `@babel/plugin-transform-async-to-generator`（不打包、不加 preset-env、不做 AST / 安全扫描）；语法错误报出出错文件并以非零状态退出。`module.json`、`icon.png`、`card/` 非 JS 与 `webroot/**` 按原始字节打包，只收录这些模块根，`node_modules` 与工具源码不会进包；ZIP 的 CRC 由库管理，不计算自定义哈希。已安装的旧运行时无法执行新产物：更新运行时后须重新构建 ZIP 并重新生成载体。详见[模块开发指南](<docs/module-development.md>)的「发布与安装」。
+
 ## 热更新和重新应用
 
 - 脚本更新：经只读 Provider / HostVar 热更新，无需 Shizuku。
@@ -118,6 +132,12 @@ WebUI 的异步数据回调、并发请求与浏览器网络 API 边界另有无
 
 ```sh
 node --test app/src/test/js/bridge-shim.test.cjs
+```
+
+模块构建工具（编译 card 脚本、webroot 字节不变、ZIP 形状与错误报告）的 Node 内置测试：
+
+```sh
+cd tools/card-build && npm ci && npm test
 ```
 
 Debug 和 Release 均使用本地 `signing/release.jks` 签名，别名和 Keychain 定位来自 `signing/keychain.properties`。密码只从 Keychain 读取，不输出或写入文件；缺少签名文件或无法读取 Keychain 时构建失败。整个 signing 目录不提交 Git。签名冲突不能通过自动卸载绕过。

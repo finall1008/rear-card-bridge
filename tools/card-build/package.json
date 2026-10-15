@@ -1,0 +1,22 @@
+{
+  "name": "card-build",
+  "version": "1.0.0",
+  "private": true,
+  "description": "背屏卡片模块构建工具：把 card/**/*.js 的原生 async/await 编译为生成器纯 JS，并打成模块 ZIP",
+  "type": "module",
+  "bin": {
+    "card-build": "./bin/card-build.js"
+  },
+  "scripts": {
+    "build": "node bin/card-build.js",
+    "test": "node --test \"test/*.test.js\""
+  },
+  "engines": {
+    "node": "^22.18.0 || >=24.11.0"
+  },
+  "dependencies": {
+    "@babel/core": "8.0.7",
+    "@babel/plugin-transform-async-to-generator": "8.0.1",
+    "fflate": "0.8.3"
+  }
+}

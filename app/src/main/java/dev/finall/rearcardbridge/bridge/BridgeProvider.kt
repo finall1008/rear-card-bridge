@@ -88,7 +88,10 @@ class BridgeProvider : ContentProvider() {
                 }
             }
         }
-        result.putString("sync_results", JSONObject().put("results", sync).toString())
+        // The host only surfaces one HostVar change per MAML cycle to JS, so the
+        // standalone bridge_outbox_ack var never arrives. Carry the batch id inside
+        // sync_results instead — that var demonstrably reaches the card every time.
+        result.putString("sync_results", JSONObject().put("batch", batch).put("results", sync).toString())
         return result
     }
 

@@ -329,12 +329,14 @@ class CardPackageBuilder {
     /**
      * Native-side half of the bridge protocol. The JsCanvas localStorage of the host writes
      * into SharedPreferences named jscanvas_<canvasName.hashCode hex>_<customEditLocalId|0>;
-     * this block polls the outbox key once per second and forwards unseen batches.
+     * this block polls the outbox key every 100 ms and forwards unseen batches. Local ops
+     * (config/storage/files) must answer well within a second; a 1 s tick made sequential
+     * module startup chains take tens of seconds.
      */
     private fun bridgeManifestSection(canvasName: String, groupId: String): String {
         val prefsHash = Integer.toHexString(canvasName.hashCode())
         return """
-          <Var name="bridge_tick" expression="int(#time/1000)" threshold="1">
+          <Var name="bridge_tick" expression="int(#time/100)" threshold="1">
             <Trigger>
               <FieldCommand class="com.miui.maml.ScreenContext" target="__objContext" targetType="var" field="mContext" method="get" return="bridge_ctx" returnType="object"/>
               <MethodCommand class="android.content.Context" target="bridge_ctx" targetType="var" method="createDeviceProtectedStorageContext" return="bridge_dp" returnType="object"/>

@@ -29,19 +29,20 @@
     ctx.fillText('在卡片桥的模块设置里修改标题 / 增加计数', 360, 480);
   }
 
-  function load() {
+  // 源码直接用原生 async/await；打包前必须用 tools/card-build 编译（见 docs/module-development.md）。
+  async function load() {
     if (typeof bridge === 'undefined') { state.label = '桥不可用'; requestDraw(); return; }
-    bridge.config.get().then(function (config) {
+    try {
+      var config = await bridge.config.get();
       state.label = config.title || '计数器';
-      return bridge.storage.get('count');
-    }).then(function (count) {
+      var count = await bridge.storage.get('count');
       state.count = typeof count === 'number' ? count : 0;
       requestDraw();
-    }).catch(function (error) {
+    } catch (error) {
       state.label = '读取失败';
       bridge.log.error('加载失败: ' + error);
       requestDraw();
-    });
+    }
   }
 
   bridge.config.onChange(load);
