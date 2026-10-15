@@ -45,7 +45,7 @@ weather.zip
 
 ## 2. 基础 API
 
-卡片（QuickJS）和设置页（WebView）共用 `bridge.config`、`bridge.storage`、`bridge.files` 和卡片联动操作，数据共享。桥接读写方法返回 Promise；失败时 reject 一个带 `code` 的 Error。**`bridge.net` 仅在背屏卡片中提供；设置页直接使用 WebView 的 `fetch` / `XMLHttpRequest`，不经过原生网络后端。**
+卡片（QuickJS）和设置页（WebView）共用 `bridge.config`、`bridge.storage`、`bridge.files`、`bridge.net` 和卡片联动操作，数据共享。桥接读写方法返回 Promise；失败时 reject 一个带 `code` 的 Error。设置页普通请求可直接使用 WebView 的 `fetch` / `XMLHttpRequest`；需要共享网页登录状态时使用 `bridge.net.request({ cookies: true, ... })`。
 
 设置页注意：在 `webroot/index.html` 里**第一个**引入桥接脚本：
 
@@ -98,7 +98,7 @@ await bridge.files.remove("cache/weather.json");
 
 ### 设置页网络请求（WebView）
 
-设置页是普通网页，直接使用浏览器 API，不提供 `bridge.net`，也不要求模块声明原生 `network` 能力：
+设置页是普通网页，可以直接使用浏览器 API；仅使用 `fetch` / XHR 不要求声明原生 `network` 能力：
 
 ```js
 const response = await fetch("https://example.com/api", {
@@ -110,11 +110,25 @@ const data = await response.json();
 - 本地 `webroot/index.html` 通过 `file://` 加载，开启 WebView 的文件访问、文件间访问和文件页跨来源访问；不额外安装目录白名单或文件拦截规则。模块代码受信任，能访问的文件范围仍由 Android 应用权限决定。
 - HTTP(S) 请求由 WebView 直接发送，不代理到原生后端、不替换浏览器网络 API、不修改 TLS 证书校验。文件页面的跨来源访问开关用于放开远程接口的 CORS 访问。
 - `fetch` 的目标地址应为 HTTP(S)；Chromium 的 `fetch` 本身不支持 `file://` / `content://` 目标，本地文件请求可以用 XMLHttpRequest。
+- 设置页主框架的 HTTP(S) 导航仍交给系统浏览器，防止远程网页替换已注入原生桥接口的设置页。登录请用 `window.open(url, '_blank')`：桥会打开不注入 bridge 的独立 WebView 子窗口，设置页保持不变。子窗口只加载网页，主框架的 HTTP 跳转自动升级到 HTTPS（兼容小米 Passport 的回调），不提供文件访问；可在窗口内前进、后退，或手动关闭。`window.close()` 也会关闭子窗口。
 - 超时、取消、流式读取等由页面使用浏览器 API 控制，例如 `AbortController`；原生背屏网络接口的超时和大小限制不适用于设置页。
 
-### 背屏网络请求（QuickJS）
+### 网页登录与模块独立会话
 
-需要 `network` 能力。由卡片桥在后台线程执行，结果异步回传到背屏卡片。
+每个模块使用独立的 WebView Profile，设置页、登录子窗口和该模块的原生 Cookie 请求共用这个 Profile。模块更新保留会话，卸载删除会话。设备的 Android System WebView 必须支持 `MULTI_PROFILE`；不支持时显示更新 WebView 的提示，不改用全局共享 Cookie。
+
+```js
+// 设置页：登录地址由平台返回，不需要新增 bridge 登录接口。
+window.open(loginUrl, '_blank');
+// 用户登录并关闭子窗口后，点击设置页自己的“检查登录”按钮发起下方请求。
+const res = await bridge.net.request({ url: usageUrl, cookies: true });
+```
+
+桥不自动判定平台登录是否成功；模块按真实 API 响应判断。浏览器 `fetch` 仍受 Cookie/SameSite 等浏览器规则约束，允许跨域不等于允许任意设置 `Cookie` 请求头。带登录态的设置页请求和背屏请求统一使用 `cookies: true`，无需把 Cookie 复制进模块配置或业务存储。Profile 隔离浏览器会话，不是对受信任模块代码的文件访问沙箱。
+
+### 原生网络请求（卡片与设置页共用）
+
+需要 `network` 能力。由卡片桥在后台线程执行，结果异步回传给调用方，不替换浏览器的 `fetch` / XHR。
 
 ```js
 const res = await bridge.net.request({
@@ -122,13 +136,19 @@ const res = await bridge.net.request({
   method: "GET",                 // 默认 GET
   headers: { "Accept": "application/json" },
   responseType: "text",          // "text"（默认）或 "base64"
+  cookies: true,                 // 默认 false；自动读写本模块 Profile 的 Cookie
+  redirect: "manual",            // 默认 "follow"；manual 返回当前这一跳
   timeoutMs: 180000              // 可选；不传默认 15000，0 表示不设超时
 });
-// res: { status: 200, body: "..." } 或 { status, bodyBase64 }
+// res: { status, url, headers, body } 或 { status, url, headers, bodyBase64 }
+// url 是最终地址；headers 为小写名称 → 字符串数组，例如 { location: ["/login"] }
 ```
 
 - `timeoutMs` 同时设置连接超时和读取等待超时，不是请求总耗时限制。未传或传 `null` 时默认 15000 毫秒；正整数原样传给 Android 网络接口，不设 60 秒等业务上限；`0` 关闭这两项超时；负数报 `INVALID_ARGS`。
 - 网络超时 reject 一个 `code === 'TIMEOUT'` 的 Error，提示“结果未知”。服务端可能已经受理，尤其是付费请求，不得将超时视为未执行并自动重试。不要编写自动重试该请求的逻辑。
+- `cookies: true` 时，每一跳发送 URL 匹配的 Cookie，并在处理跳转前保存该跳所有 `Set-Cookie`；手动跳转模式也会保存。此时不要同时传自定义 `Cookie` 请求头。`cookies: false` 不读取或写入 Profile。
+- `redirect: "manual"` 返回 3xx 状态和 `Location`，模块可像 MiMo 一样校验地址、把平台返回的 HTTP 地址主动改为 HTTPS 后再发下一跳。`follow` 最多跟随 8 次跳转；跨来源会移除调用方的 Authorization/Cookie 等凭据头，HTTPS 降级到 HTTP 会报错。301/302 的 POST 和 303 的非 HEAD 请求变成 GET，307/308 保留方法和正文。自动跳转不是网络失败重试。
+- 响应头包含 `Set-Cookie`，因此不要把整段 headers 或包含签名参数的地址写入日志。TLS 校验保持系统默认，不接受无效证书。
 - `POST` 等带请求体时传 `body`（字符串）或 `bodyBase64`。
 - `responseType: "json"` 不存在：文本响应用 `JSON.parse(res.body)` 即可。
 - 限制：请求体 ≤ 1MB，响应 ≤ 8MB。不要在背屏上做大文件下载。

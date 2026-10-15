@@ -67,13 +67,18 @@ test('out-of-order responses complete the matching Promises', async () => {
   h.complete(h.requests[0].id, { ok: true, value: 'duplicate ignored' });
 });
 
-test('WebUI does not expose native networking or replace browser network APIs', async () => {
+test('WebUI exposes session networking without replacing browser network APIs', async () => {
   const h = loadBridge();
-  assert.equal(h.bridge.net, undefined);
+  const response = h.bridge.net.request({ url: 'https://example.com/', cookies: true, redirect: 'manual' });
+  assert.equal(h.requests[0].op, 'net.request');
+  assert.equal(h.requests[0].args.cookies, true);
+  assert.equal(h.requests[0].args.redirect, 'manual');
+  h.complete(h.requests[0].id, { ok: true, value: { status: 302, url: 'https://example.com/', headers: { location: ['/login'] }, body: '' } });
+  assert.equal((await response).status, 302);
   assert.equal(h.window.fetch, h.fetch);
   assert.equal(h.window.XMLHttpRequest, h.XMLHttpRequest);
   assert.equal((await h.window.fetch('https://example.com/')).ok, true);
-  assert.equal(h.requests.length, 0);
+  assert.equal(h.requests.length, 1);
 });
 
 test('native submission failure rejects without retry', async () => {

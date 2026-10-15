@@ -5,9 +5,7 @@ import android.util.Base64
 import android.util.Log
 import dev.finall.rearcardbridge.live.ContentOperations
 import java.io.File
-import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
-import java.net.URL
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -41,6 +39,8 @@ class ModuleBackend(context: Context, private val store: ModuleStore = ModuleSto
             error("CAPABILITY_DENIED", error.message ?: "模块未声明所需能力。")
         } catch (error: IllegalArgumentException) {
             error("INVALID_ARGS", error.message ?: "参数无效。")
+        } catch (error: UnsupportedOperationException) {
+            error("UNSUPPORTED", error.message ?: "当前系统不支持该功能。")
         } catch (error: Exception) {
             error("ERROR", error.message ?: error.javaClass.simpleName)
         }
@@ -122,7 +122,7 @@ class ModuleBackend(context: Context, private val store: ModuleStore = ModuleSto
                 if (file.isDirectory) file.deleteRecursively() else file.delete()
                 true
             }
-            "net.request" -> httpRequest(args)
+            "net.request" -> httpRequest(moduleId, args)
             "log" -> {
                 val level = args.optString("level").ifBlank { "info" }
                 val message = args.optString("message").take(1000)
@@ -141,7 +141,13 @@ class ModuleBackend(context: Context, private val store: ModuleStore = ModuleSto
             else -> throw IllegalArgumentException("未知操作：$op")
         }
 
-    private fun httpRequest(args: JSONObject): JSONObject {
+    /**
+     * net.request runs on the caller's worker (bridge executor / settings IO) and
+     * stays outside [ContentOperations.lock]. `cookies: true` swaps the per-module
+     * profile jar into [ModuleHttp] for this call only; without it, caller headers
+     * — including an explicit Cookie header — are sent untouched.
+     */
+    private fun httpRequest(moduleId: String, args: JSONObject): JSONObject {
         val url = args.optString("url")
         require(url.startsWith("https://") || url.startsWith("http://")) { "仅支持 http/https 地址。" }
         val method = args.optString("method").ifBlank { "GET" }.uppercase()
@@ -150,50 +156,68 @@ class ModuleBackend(context: Context, private val store: ModuleStore = ModuleSto
         val timeout = networkTimeoutMillis(
             if (args.isNull("timeoutMs")) null else args.getInt("timeoutMs"),
         )
-        val connection = URL(url).openConnection() as HttpURLConnection
-        try {
-            connection.connectTimeout = timeout
-            connection.readTimeout = timeout
-            connection.requestMethod = method
-            connection.instanceFollowRedirects = true
-            val headers = args.optJSONObject("headers")
-            headers?.keys()?.forEach { key -> connection.setRequestProperty(key, headers.optString(key)) }
-            val bodyText = args.optString("body")
-            val bodyBase64 = args.optString("bodyBase64")
-            val bodyBytes = when {
-                bodyBase64.isNotEmpty() -> Base64.decode(bodyBase64, Base64.DEFAULT)
-                bodyText.isNotEmpty() -> bodyText.toByteArray(Charsets.UTF_8)
-                else -> null
+        val cookiesEnabled = when (val value = args.opt("cookies")) {
+            null, JSONObject.NULL -> false
+            is Boolean -> value
+            else -> throw IllegalArgumentException("cookies 仅支持 true / false。")
+        }
+        val redirectMode = args.optString("redirect").ifBlank { "follow" }
+        require(redirectMode == "follow" || redirectMode == "manual") { "redirect 仅支持 follow / manual。" }
+        val headers = LinkedHashMap<String, String>()
+        val requestHeaders = args.optJSONObject("headers")
+        requestHeaders?.keys()?.forEach { key ->
+            if (cookiesEnabled && key.equals("Cookie", ignoreCase = true)) {
+                throw IllegalArgumentException(
+                    "cookies:true 时 Cookie 由本模块 Profile 统一提供，不能显式传 Cookie 请求头。",
+                )
             }
-            if (bodyBytes != null) {
-                require(bodyBytes.size <= MAX_BODY_BYTES) { "请求体过大。" }
-                connection.doOutput = true
-                connection.outputStream.use { it.write(bodyBytes) }
+            headers[key] = requestHeaders.optString(key)
+        }
+        val bodyText = args.optString("body")
+        val bodyBase64 = args.optString("bodyBase64")
+        val bodyBytes = when {
+            bodyBase64.isNotEmpty() -> Base64.decode(bodyBase64, Base64.DEFAULT)
+            bodyText.isNotEmpty() -> bodyText.toByteArray(Charsets.UTF_8)
+            else -> null
+        }
+        if (bodyBytes != null) require(bodyBytes.size <= MAX_BODY_BYTES) { "请求体过大。" }
+        val cookieStore = if (cookiesEnabled) profileCookieStore(moduleId) else null
+        val response = ModuleHttp.execute(
+            ModuleHttp.Request(
+                url = url,
+                method = method,
+                headers = headers,
+                body = bodyBytes,
+                followRedirects = redirectMode == "follow",
+                timeoutMillis = timeout,
+                maxResponseBytes = MAX_RESPONSE_BYTES,
+            ),
+            cookieStore,
+        )
+        val headerJson = JSONObject()
+        response.headers.forEach { (name, values) ->
+            headerJson.put(name, JSONArray().also { array -> values.forEach { array.put(it) } })
+        }
+        val result = JSONObject()
+            .put("status", response.status)
+            .put("url", response.url)
+            .put("headers", headerJson)
+        if (responseType == "base64") {
+            result.put("bodyBase64", Base64.encodeToString(response.body, Base64.NO_WRAP))
+        } else {
+            result.put("body", response.body.toString(Charsets.UTF_8))
+        }
+        return result
+    }
+
+    /** Main-profile CookieManager from the worker; throws UNSUPPORTED without MULTI_PROFILE. */
+    private fun profileCookieStore(moduleId: String): ModuleHttp.CookieStore {
+        val manager = ModuleWebProfiles.cookieManager(moduleId)
+        return object : ModuleHttp.CookieStore {
+            override fun cookiesFor(url: String): String? = manager.getCookie(url)
+            override fun store(url: String, setCookies: List<String>) {
+                ModuleWebProfiles.saveCookies(manager, url, setCookies)
             }
-            val status = connection.responseCode
-            val stream = if (status in 200..399) connection.inputStream else connection.errorStream
-            val bytes = stream?.use { input ->
-                val buffer = java.io.ByteArrayOutputStream()
-                val chunk = ByteArray(16 * 1024)
-                var total = 0
-                while (true) {
-                    val read = input.read(chunk)
-                    if (read < 0) break
-                    total += read
-                    require(total <= MAX_RESPONSE_BYTES) { "响应内容过大。" }
-                    buffer.write(chunk, 0, read)
-                }
-                buffer.toByteArray()
-            } ?: ByteArray(0)
-            val result = JSONObject().put("status", status)
-            if (responseType == "base64") {
-                result.put("bodyBase64", Base64.encodeToString(bytes, Base64.NO_WRAP))
-            } else {
-                result.put("body", bytes.toString(Charsets.UTF_8))
-            }
-            return result
-        } finally {
-            connection.disconnect()
         }
     }
 

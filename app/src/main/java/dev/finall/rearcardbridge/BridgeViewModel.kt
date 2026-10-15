@@ -15,6 +15,7 @@ import dev.finall.rearcardbridge.model.ShizukuStatus
 import dev.finall.rearcardbridge.module.GitInstall
 import dev.finall.rearcardbridge.module.ModuleInstaller
 import dev.finall.rearcardbridge.module.ModuleStore
+import dev.finall.rearcardbridge.module.ModuleWebProfiles
 import dev.finall.rearcardbridge.packageio.CardPackageBuilder
 import dev.finall.rearcardbridge.shizuku.ShizukuCardClient
 import java.io.File
@@ -204,6 +205,7 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
             synchronized(ContentOperations.lock) {
                 val group = contentStore.group(getApplication<Application>().packageName, id)
                 require(group?.cardId == null) { "请先恢复该模块绑定的载体卡片，再卸载。" }
+                ModuleWebProfiles.remove(id)
                 if (group != null) contentStore.removeGroup(group.id)
                 moduleStore.remove(id)
             }

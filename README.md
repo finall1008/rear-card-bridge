@@ -34,7 +34,7 @@ module.zip
 
 同一模块由 `module.json` 的 `id` 标识，更新包的 `versionCode` 必须递增。更新保留配置和业务数据，卸载则删除这些数据。仓库安装支持 GitHub、GitLab、Gitee 的公开仓库归档；前端须预先构建为静态文件，手机上不执行安装脚本或构建脚本。
 
-背屏端运行 MAML / QuickJS / Canvas，不是 WebView；设置页运行在卡片桥的 WebView 中。两端共用 `bridge.config`、`bridge.storage`、`bridge.files` 等数据接口。设置页联网直接用 WebView 的 `fetch` / XMLHttpRequest；`bridge.net` 仅用于背屏卡片，详见开发指南。
+背屏端运行 MAML / QuickJS / Canvas，不是 WebView；设置页运行在卡片桥的 WebView 中。两端共用 `bridge.config`、`bridge.storage`、`bridge.files` 等数据接口。设置页普通联网用 WebView 的 `fetch` / XMLHttpRequest；网页登录用 `window.open` 打开不带桥接口的子窗口。每个模块有独立的浏览器 Profile，设置页与背屏均可通过 `bridge.net.request({ cookies: true, ... })` 共享该模块的登录状态，详见开发指南。
 
 ### 模块构建工具（tools/card-build）
 

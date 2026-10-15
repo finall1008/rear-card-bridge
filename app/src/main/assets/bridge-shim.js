@@ -1,7 +1,7 @@
 /*
  * 背屏卡片桥 · 模块设置页桥接 API。
  * 在 webroot/index.html 中以第一个脚本引入：<script src="bridge-shim.js"></script>
- * 提供与背屏共享的数据和卡片操作；网页联网直接使用 fetch / XMLHttpRequest。
+ * 提供与背屏共享的数据、卡片操作和原生网络；普通网页请求仍可直接用 fetch / XMLHttpRequest。
  * 原生接口只提交任务，后台完成后按请求 ID
  * 回调对应 Promise，不阻塞网页 JS。桥不可用时 bridge 为 undefined。
  */
@@ -88,6 +88,9 @@
       readText: function (path) { return invoke('files.readText', { path: path }); },
       writeText: function (path, content) { return invoke('files.writeText', { path: path, content: content }); },
       remove: function (path) { return invoke('files.remove', { path: path }); }
+    },
+    net: {
+      request: function (options) { return invoke('net.request', options || {}); }
     },
     card: {
       onRefresh: function (fn) { if (typeof fn === 'function') refreshListeners.push(fn); },
