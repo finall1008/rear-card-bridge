@@ -32,6 +32,29 @@ class ModuleManifestTest {
     }
 
     @Test
+    fun `new installs upgrades and equal version overwrites do not require confirmation`() {
+        val current = validate(versionCode = 2)
+        current.checkDowngrade(null)
+        current.checkDowngrade(current)
+        validate(versionCode = 3).checkDowngrade(current)
+    }
+
+    @Test
+    fun `downgrade requires confirmation and identifies both versions`() {
+        val error = assertThrows(ModuleDowngradeException::class.java) {
+            validate(version = "1.0.0", versionCode = 1)
+                .checkDowngrade(validate(version = "2.0.0", versionCode = 2))
+        }
+        assertTrue(error.message!!.contains("2.0.0（2）"))
+        assertTrue(error.message!!.contains("1.0.0（1）"))
+    }
+
+    @Test
+    fun `confirmed downgrade is allowed`() {
+        validate(versionCode = 1).checkDowngrade(validate(versionCode = 2), allowDowngrade = true)
+    }
+
+    @Test
     fun `webui requires index html`() {
         assertThrows(IllegalArgumentException::class.java) {
             validate(entries = cardEntries + "webroot/style.css")

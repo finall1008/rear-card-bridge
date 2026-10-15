@@ -21,8 +21,8 @@ class ModuleInstaller(private val context: Context) {
     private val builder = CardPackageBuilder()
 
     /** Call under ContentOperations.lock. Returns the installed manifest and saved revision. */
-    fun install(zip: File, source: String?): Pair<InstalledModule, LiveContentSnapshot> {
-        val installed = store.install(zip, source)
+    fun install(zip: File, source: String?, allowDowngrade: Boolean = false): Pair<InstalledModule, LiveContentSnapshot> {
+        val installed = store.install(zip, source, allowDowngrade)
         val cardDir = File(installed.packageDir, "card")
         require(cardDir.isDirectory) { "模块缺少 card/ 目录。" }
         val inner = File.createTempFile("module-card-", ".zip", context.cacheDir)

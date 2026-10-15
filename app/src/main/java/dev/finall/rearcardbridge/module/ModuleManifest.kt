@@ -21,6 +21,13 @@ data class ModuleManifest(
     /** Optional "background": {"intervalMinutes": N}; null when the module does not opt in. */
     val backgroundIntervalMinutes: Int? = null,
 ) {
+    /** Equal versions overwrite directly; only an older package needs user confirmation. */
+    fun checkDowngrade(current: ModuleManifest?, allowDowngrade: Boolean = false) {
+        if (current != null && versionCode < current.versionCode && !allowDowngrade) {
+            throw ModuleDowngradeException(current, this)
+        }
+    }
+
     companion object {
         const val API_VERSION = 2
         val KNOWN_CAPABILITIES = setOf("network", "storage", "files")
@@ -97,3 +104,8 @@ data class ModuleManifest(
         }
     }
 }
+
+class ModuleDowngradeException(current: ModuleManifest, incoming: ModuleManifest) : IllegalArgumentException(
+    "模块「${incoming.name}」将从 ${current.version}（${current.versionCode}）降级到 " +
+        "${incoming.version}（${incoming.versionCode}）。配置和数据会保留，但旧版本可能无法正确读取现有数据。",
+)

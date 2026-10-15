@@ -61,10 +61,10 @@ class ModuleStore(context: Context) {
     }
 
     /**
-     * Validates and installs a module zip. Updates require a strictly greater versionCode.
+     * Validates and installs a module zip. Older versions require explicit confirmation.
      * The package directory is replaced; data/ is preserved.
      */
-    fun install(zip: File, source: String?): InstalledModule {
+    fun install(zip: File, source: String?, allowDowngrade: Boolean = false): InstalledModule {
         ZipFile(zip).use { zipFile ->
             val names = LinkedHashSet<String>()
             val enumeration = zipFile.entries()
@@ -82,12 +82,7 @@ class ModuleStore(context: Context) {
                 },
                 names,
             )
-            val existing = get(manifest.id)
-            if (existing != null) {
-                require(manifest.versionCode > existing.manifest.versionCode) {
-                    "新版本号必须大于当前版本（当前 ${existing.manifest.versionCode}，安装包 ${manifest.versionCode}）。"
-                }
-            }
+            manifest.checkDowngrade(get(manifest.id)?.manifest, allowDowngrade)
             val moduleDir = File(root, manifest.id)
             val packageDir = File(moduleDir, "package")
             val staging = File(root, ".install-${manifest.id}")

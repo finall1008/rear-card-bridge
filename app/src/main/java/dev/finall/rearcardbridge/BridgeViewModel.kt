@@ -15,6 +15,7 @@ import dev.finall.rearcardbridge.model.ShizukuStatus
 import dev.finall.rearcardbridge.module.BackgroundRefreshScheduler
 import dev.finall.rearcardbridge.module.GitInstall
 import dev.finall.rearcardbridge.module.ModuleInstaller
+import dev.finall.rearcardbridge.module.ModuleDowngradeException
 import dev.finall.rearcardbridge.module.ModuleStore
 import dev.finall.rearcardbridge.module.ModuleWebProfiles
 import dev.finall.rearcardbridge.packageio.CardPackageBuilder
@@ -39,6 +40,8 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
     private val mutableState = MutableStateFlow(BridgeUiState())
     val state = mutableState.asStateFlow()
     private val operationLock = Mutex()
+    private data class PendingModuleInstall(val file: File, val source: String, val updateOnly: Boolean)
+    private var pendingModuleInstall: PendingModuleInstall? = null
     var onOperationResult: ((OperationResult, String?) -> Unit)? = null
     var onOpenRearSettingsRequested: ((String?) -> OperationResult)? = null
 
@@ -144,23 +147,64 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun installModuleZip(uri: Uri) = runOperation(queue = true) {
-        val (installed, saved) = withContext(Dispatchers.IO) {
-            val file = File.createTempFile("module-import-", ".zip", getApplication<Application>().cacheDir)
-            try {
+        val file = File.createTempFile("module-import-", ".zip", getApplication<Application>().cacheDir)
+        try {
+            withContext(Dispatchers.IO) {
                 requireNotNull(getApplication<Application>().contentResolver.openInputStream(uri)) {
                     "无法读取 ZIP 文件。"
                 }.use { source -> file.outputStream().use { source.copyTo(it) } }
-                moduleInstaller.install(file, source = "zip")
-            } finally { file.delete() }
+            }
+            installPreparedModule(file, source = "zip")
+        } finally {
+            if (pendingModuleInstall?.file != file) file.delete()
         }
-        finishModuleInstall(installed.manifest.id,
-            "模块「${installed.manifest.name}」已安装（版本 ${saved.revision}）。")
     }
 
     fun installModuleGit(url: String, branch: String?) = runOperation {
-        val (installed, saved) = installModuleGitOnce(url, branch)
-        finishModuleInstall(installed.manifest.id,
-            "模块「${installed.manifest.name}」已从仓库安装（版本 ${saved.revision}）。")
+        installModuleGitOnce(url, branch)
+    }
+
+    private suspend fun installPreparedModule(file: File, source: String, updateOnly: Boolean = false,
+        allowDowngrade: Boolean = false) {
+        clearPendingModuleInstall()
+        val result = try {
+            withContext(Dispatchers.IO) {
+                synchronized(ContentOperations.lock) { moduleInstaller.install(file, source, allowDowngrade) }
+            }
+        } catch (error: ModuleDowngradeException) {
+            // Retain the exact downloaded/copied ZIP, not a URI or URL that could change before confirmation.
+            pendingModuleInstall = PendingModuleInstall(file, source, updateOnly)
+            mutableState.update { it.copy(moduleDowngradeWarning = error.message) }
+            return
+        }
+        val (installed, saved) = result
+        if (updateOnly) {
+            refreshModules()
+            reloadActive()
+            mutableState.update { it.copy(status = "模块已更新。") }
+        } else {
+            finishModuleInstall(installed.manifest.id,
+                "模块「${installed.manifest.name}」已安装（版本 ${saved.revision}）。")
+        }
+    }
+
+    fun confirmModuleDowngrade() = runOperation {
+        val pending = pendingModuleInstall ?: return@runOperation
+        pendingModuleInstall = null
+        mutableState.update { it.copy(moduleDowngradeWarning = null) }
+        try {
+            installPreparedModule(pending.file, pending.source, pending.updateOnly, allowDowngrade = true)
+        } finally { pending.file.delete() }
+    }
+
+    fun dismissModuleDowngrade() {
+        if (!state.value.busy) clearPendingModuleInstall()
+    }
+
+    private fun clearPendingModuleInstall() {
+        pendingModuleInstall?.file?.delete()
+        pendingModuleInstall = null
+        mutableState.update { it.copy(moduleDowngradeWarning = null) }
     }
 
     /** Re-downloads the recorded git source. Modules installed from ZIP have no update channel. */
@@ -172,28 +216,29 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
         val (url, branch) = source.split('@').let {
             "https://" + it[0] to it.getOrNull(1)
         }
-        installModuleGitOnce(url, branch)
-        refreshModules()
-        reloadActive()
-        mutableState.update { it.copy(status = "模块已更新。") }
+        installModuleGitOnce(url, branch, updateOnly = true)
     }
 
-    private suspend fun installModuleGitOnce(url: String, branch: String?) = withContext(Dispatchers.IO) {
+    private suspend fun installModuleGitOnce(url: String, branch: String?, updateOnly: Boolean = false) {
         val repo = GitInstall.parseRepoUrl(url, branch)
-        val archive = File.createTempFile("module-git-", ".zip", getApplication<Application>().cacheDir)
-        val unpacked = File.createTempFile("module-git-", "", getApplication<Application>().cacheDir)
+        val repacked = File.createTempFile("module-git-repack-", ".zip", getApplication<Application>().cacheDir)
         try {
-            check(unpacked.delete() && unpacked.mkdirs()) { "无法创建临时目录。" }
-            GitInstall.download(repo, archive)
-            GitInstall.stripTopLevel(archive, unpacked)
-            val repacked = File.createTempFile("module-git-repack-", ".zip", getApplication<Application>().cacheDir)
-            try {
-                repackDirectory(unpacked, repacked)
-                moduleInstaller.install(repacked, source = repo.display)
-            } finally { repacked.delete() }
+            withContext(Dispatchers.IO) {
+                val archive = File.createTempFile("module-git-", ".zip", getApplication<Application>().cacheDir)
+                val unpacked = File.createTempFile("module-git-", "", getApplication<Application>().cacheDir)
+                try {
+                    check(unpacked.delete() && unpacked.mkdirs()) { "无法创建临时目录。" }
+                    GitInstall.download(repo, archive)
+                    GitInstall.stripTopLevel(archive, unpacked)
+                    repackDirectory(unpacked, repacked)
+                } finally {
+                    archive.delete()
+                    unpacked.deleteRecursively()
+                }
+            }
+            installPreparedModule(repacked, repo.display, updateOnly)
         } finally {
-            archive.delete()
-            unpacked.deleteRecursively()
+            if (pendingModuleInstall?.file != repacked) repacked.delete()
         }
     }
 
@@ -356,6 +401,7 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
     override fun onCleared() {
+        clearPendingModuleInstall()
         onOperationResult = null
         onOpenRearSettingsRequested = null
         client.close()

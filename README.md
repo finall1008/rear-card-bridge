@@ -34,7 +34,7 @@ module.zip
     └── index.html
 ```
 
-同一模块由 `module.json` 的 `id` 标识，更新包的 `versionCode` 必须递增。更新保留配置和业务数据，卸载则删除这些数据。仓库安装支持 GitHub、GitLab、Gitee 的公开仓库归档；前端须预先构建为静态文件，手机上不执行安装脚本或构建脚本。
+同一模块由 `module.json` 的 `id` 标识，同版本可直接覆盖；低版本会弹出警告，用户确认继续后也可安装。覆盖安装保留配置和业务数据，卸载则删除这些数据。仓库安装支持 GitHub、GitLab、Gitee 的公开仓库归档；前端须预先构建为静态文件，手机上不执行安装脚本或构建脚本。
 
 背屏端运行 MAML / QuickJS / Canvas，不是 WebView；设置页和后台刷新入口运行在卡片桥的 WebView 中。三端共用 `bridge.config`、`bridge.storage`、`bridge.files`、`bridge.net` 等数据接口。设置页普通联网用 WebView 的 `fetch` / XMLHttpRequest；网页登录用 `window.open` 打开不带桥接口的子窗口。每个模块有独立的浏览器 Profile，设置页、背屏和后台刷新均可通过 `bridge.net.request({ cookies: true, ... })` 共享该模块的登录状态，详见开发指南。
 
@@ -111,6 +111,8 @@ try {
 ```
 
 调用身份由 Binder 确定；不支持共享 UID 的模糊来源。无绑定时仍安装模块并返回 `BINDING_REQUIRED`，由用户随后打开桥接 App 选择替换目标。常见错误为 `USER_LOCKED`、`URI_PERMISSION_DENIED`、`INVALID_INPUT`、`ERROR`。
+
+后台入口不会弹窗；降级时返回 `DOWNGRADE_CONFIRMATION_REQUIRED`，不安装、不改动现有模块，调用方应改用前台入口让用户确认。同版本覆盖直接安装。
 
 已绑定模块更新还返回 `carrier_resource_status`（`UNKNOWN`、`CURRENT`、`UPDATE_REQUIRED`、`REAPPLY_REQUIRED`），以及已知时的静态资源变化数量。后台不会代替用户重新应用。
 

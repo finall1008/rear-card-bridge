@@ -40,7 +40,7 @@ weather.zip
 | 字段 | 规则 |
 | --- | --- |
 | id | `^[A-Za-z][A-Za-z0-9._-]{0,63}$`，更新时按 id 识别同一模块 |
-| versionCode | 整数，**更新安装时必须大于已安装版本**，否则拒绝 |
+| versionCode | 正整数；同版本可直接覆盖，低于已安装版本时须由用户在前台确认降级。覆盖安装保留配置和业务数据 |
 | apiVersion | 固定为 2 |
 | capabilities | 只允许 `network` / `storage` / `files`；声明后对应的 API 才可用 |
 | background | 可选；`intervalMinutes` 为 ≥ 1 的整数，作为默认间隔；实际执行最短 5 分钟，用户可在模块详情单独修改。必须提供 `background/main.js`；未声明的模块不参与后台刷新 |

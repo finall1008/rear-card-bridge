@@ -56,6 +56,8 @@ fun BridgeScreen(
     onConfirmReapplied: () -> Unit,
     onInstallModuleZip: () -> Unit,
     onInstallModuleGit: (String, String?) -> Unit,
+    onConfirmModuleDowngrade: () -> Unit,
+    onDismissModuleDowngrade: () -> Unit,
     onSelectModule: (String) -> Unit,
     onUninstallModule: (String) -> Unit,
     onUpdateModule: (String) -> Unit,
@@ -202,6 +204,16 @@ fun BridgeScreen(
                 Button(onClick = { confirmUninstall = false; module?.id?.let(onUninstallModule) },
                     modifier = Modifier.weight(1f), enabled = !state.busy,
                     colors = ButtonDefaults.buttonColorsPrimary()) { Text("卸载") }
+            }
+        }
+        WindowDialog(show = state.moduleDowngradeWarning != null, title = "安装旧版本？",
+            summary = state.moduleDowngradeWarning,
+            onDismissRequest = { if (!state.busy) onDismissModuleDowngrade() }) {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Button(onClick = onDismissModuleDowngrade, modifier = Modifier.weight(1f),
+                    enabled = !state.busy) { Text("取消") }
+                Button(onClick = onConfirmModuleDowngrade, modifier = Modifier.weight(1f),
+                    enabled = !state.busy, colors = ButtonDefaults.buttonColorsPrimary()) { Text("继续安装") }
             }
         }
         WindowDialog(show = state.error != null, title = "操作提示", summary = state.error,

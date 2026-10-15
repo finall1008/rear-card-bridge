@@ -8,6 +8,7 @@ import android.os.Binder
 import android.os.Bundle
 import android.os.UserManager
 import dev.finall.rearcardbridge.module.ModuleInstaller
+import dev.finall.rearcardbridge.module.ModuleDowngradeException
 
 /** Synchronous IPC: no Activity, service, notification or Shizuku request is started here. */
 class UpdateContentProvider : ContentProvider() {
@@ -73,6 +74,8 @@ class UpdateContentProvider : ContentProvider() {
             }
         } catch (error: SecurityException) {
             return failure("URI_PERMISSION_DENIED", error.message ?: "未授予 ZIP 读取权限。")
+        } catch (error: ModuleDowngradeException) {
+            return failure("DOWNGRADE_CONFIRMATION_REQUIRED", "${error.message}请通过前台入口确认降级安装。")
         } catch (error: IllegalArgumentException) {
             return failure("INVALID_INPUT", error.message ?: "输入无效。")
         } catch (error: Exception) {
