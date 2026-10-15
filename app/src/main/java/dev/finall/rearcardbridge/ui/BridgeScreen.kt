@@ -13,7 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.finall.rearcardbridge.BuildConfig
 import dev.finall.rearcardbridge.live.CarrierResourceState
@@ -217,11 +217,11 @@ private fun ModuleListPage(state: BridgeUiState, onInstallZip: () -> Unit,
                 Button(onClick = onInstallZip, modifier = Modifier.weight(1f),
                     colors = ButtonDefaults.buttonColorsPrimary(), enabled = !state.busy) {
                     Text("导入 ZIP", maxLines = 1, style = MiuixTheme.textStyles.button,
-                        fontFamily = FontFamily.SansSerif)
+                        fontWeight = FontWeight.Medium)
                 }
                 Button(onClick = onInstallGit, modifier = Modifier.weight(1f), enabled = !state.busy) {
                     Text("仓库安装", maxLines = 1, style = MiuixTheme.textStyles.button,
-                        fontFamily = FontFamily.SansSerif)
+                        fontWeight = FontWeight.Medium)
                 }
             }
         }
