@@ -21,10 +21,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.lifecycleScope
+import dev.finall.rearcardbridge.live.ContentOperations
 import dev.finall.rearcardbridge.module.ModuleBackend
 import dev.finall.rearcardbridge.module.ModuleStore
 import java.io.ByteArrayInputStream
 import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
@@ -171,38 +176,45 @@ class ModuleSettingsActivity : ComponentActivity() {
     }
 
     /**
-     * Injected as window.BridgeNative. Methods run on the WebView JS bridge thread, which is
-     * off the UI thread, so the synchronous ModuleBackend calls are fine here.
+     * Submission returns immediately to the WebView JS thread. Work runs on IO workers;
+     * completion is posted to the live WebView on the main thread using the request ID.
+     * The Activity's lifecycle stops callbacks after it is destroyed; requests are not retried.
      */
-    private class NativeBridge(
+    private inner class NativeBridge(
         private val moduleId: String,
         private val store: ModuleStore,
         private val backend: ModuleBackend,
     ) {
         @JavascriptInterface
-        fun invoke(payload: String): String {
-            return try {
-                val request = JSONObject(payload)
-                val op = request.optString("op")
-                val args = request.optJSONObject("args")
-                backend.execute(moduleId, op, args).toString()
-            } catch (error: Exception) {
-                JSONObject().put("ok", false)
-                    .put("error", JSONObject()
-                        .put("code", "INVALID_ARGS")
-                        .put("message", "请求格式无效。"))
-                    .toString()
+        fun invoke(requestId: String, payload: String) {
+            lifecycleScope.launch {
+                val result = withContext(Dispatchers.IO) {
+                    try {
+                        val request = JSONObject(payload)
+                        val op = request.getString("op")
+                        if (op == "bridge.poll") {
+                            val state = synchronized(ContentOperations.lock) {
+                                val revision = store.readState(moduleId)
+                                JSONObject()
+                                    .put("configRev", revision.optLong("configRev", 0L))
+                                    .put("refreshRev", revision.optLong("refreshRev", 0L))
+                                    .put("config", store.readConfig(moduleId))
+                            }
+                            JSONObject().put("ok", true).put("value", state)
+                        } else {
+                            backend.execute(moduleId, op, request.optJSONObject("args"))
+                        }
+                    } catch (error: Exception) {
+                        JSONObject().put("ok", false)
+                            .put("error", JSONObject()
+                                .put("code", "INVALID_ARGS")
+                                .put("message", "请求格式无效。"))
+                    }
+                }
+                val callback = "window.__rearCardBridgeComplete && " +
+                    "window.__rearCardBridgeComplete(${JSONObject.quote(requestId)},$result);"
+                webView?.evaluateJavascript(callback, null)
             }
-        }
-
-        @JavascriptInterface
-        fun poll(): String {
-            val state = store.readState(moduleId)
-            return JSONObject()
-                .put("configRev", state.optLong("configRev", 0L))
-                .put("refreshRev", state.optLong("refreshRev", 0L))
-                .put("config", store.readConfig(moduleId))
-                .toString()
         }
     }
 

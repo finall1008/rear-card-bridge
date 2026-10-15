@@ -1,8 +1,8 @@
 /*
  * 背屏卡片桥 · 模块设置页桥接 API。
  * 在 webroot/index.html 中以第一个脚本引入：<script src="bridge-shim.js"></script>
- * 与背屏卡片内的 bridge API 保持一致；这里的调用经 WebView 原生接口同步执行，
- * 以 Promise 形式返回。桥不可用（例如直接放到浏览器里调试）时 bridge 为 undefined。
+ * 与背屏卡片内的 bridge API 保持一致。原生接口只提交任务，后台完成后按请求 ID
+ * 回调对应 Promise，不阻塞网页 JS。桥不可用时 bridge 为 undefined。
  */
 (function () {
   'use strict';
@@ -15,24 +15,29 @@
     return error;
   }
 
+  // A new page must not consume a completion belonging to the previous page.
+  var pageId = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+  var nextId = 0;
+  var pending = Object.create(null);
+
+  window.__rearCardBridgeComplete = function (id, result) {
+    var request = pending[id];
+    if (!request) return;
+    delete pending[id];
+    if (result && result.ok) request.resolve(result.value);
+    else request.reject(toError(result && result.error));
+  };
+
   function invoke(op, args) {
     return new Promise(function (resolve, reject) {
-      var raw;
+      var id = pageId + '-' + (++nextId);
+      pending[id] = { resolve: resolve, reject: reject };
       try {
-        raw = native.invoke(JSON.stringify({ op: op, args: args || {} }));
+        native.invoke(id, JSON.stringify({ op: op, args: args || {} }));
       } catch (error) {
+        delete pending[id];
         reject(toError({ message: String(error) }));
-        return;
       }
-      var result;
-      try {
-        result = JSON.parse(raw);
-      } catch (error) {
-        reject(toError({ code: 'BAD_RESPONSE', message: '桥接返回了无效数据' }));
-        return;
-      }
-      if (result && result.ok) resolve(result.value);
-      else reject(toError(result && result.error));
     });
   }
 
@@ -47,16 +52,18 @@
     });
   }
 
+  var polling = false;
   function poll() {
-    var raw;
-    try { raw = native.poll(); } catch (error) { return; }
-    var state;
-    try { state = JSON.parse(raw); } catch (error) { return; }
-    if (typeof state.configRev === 'number' && state.configRev !== lastConfigRev) {
-      lastConfigRev = state.configRev;
-      lastConfig = state.config || {};
-      fire(configListeners, lastConfig);
-    }
+    if (polling) return;
+    polling = true;
+    invoke('bridge.poll').then(function (state) {
+      polling = false;
+      if (typeof state.configRev === 'number' && state.configRev !== lastConfigRev) {
+        lastConfigRev = state.configRev;
+        lastConfig = state.config || {};
+        fire(configListeners, lastConfig);
+      }
+    }, function () { polling = false; });
   }
   setInterval(poll, 1000);
 

@@ -3,8 +3,10 @@ package dev.finall.rearcardbridge.module
 import android.content.Context
 import android.util.Base64
 import android.util.Log
+import dev.finall.rearcardbridge.live.ContentOperations
 import java.io.File
 import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
 import java.net.URL
 import org.json.JSONArray
 import org.json.JSONObject
@@ -12,8 +14,9 @@ import org.json.JSONObject
 /**
  * Shared executor behind the card-side bridge provider and the settings WebUI.
  * Every operation returns {"ok":true,"value":...} or {"ok":false,"error":{code,message}}.
- * Calls are synchronous and blocking; callers pick the thread (the provider uses a worker
- * executor for net.request, the WebView JavascriptInterface already runs off the UI thread).
+ * Calls are blocking: the provider and WebUI host dispatch network requests to workers.
+ * Local read-modify-write operations are serialized; a pending network request does not
+ * hold that lock or block settings/configuration operations.
  */
 class ModuleBackend(context: Context, private val store: ModuleStore = ModuleStore(context)) {
     fun execute(moduleId: String, op: String, args: JSONObject?): JSONObject {
@@ -26,7 +29,14 @@ class ModuleBackend(context: Context, private val store: ModuleStore = ModuleSto
                 op.startsWith("files.") -> requireCapability(capabilities, "files", op)
                 op == "net.request" -> requireCapability(capabilities, "network", op)
             }
-            ok(executeOp(moduleId, module, op, args ?: JSONObject()))
+            val value = if (op == "net.request") {
+                executeOp(moduleId, module, op, args ?: JSONObject())
+            } else synchronized(ContentOperations.lock) {
+                executeOp(moduleId, module, op, args ?: JSONObject())
+            }
+            ok(value)
+        } catch (error: SocketTimeoutException) {
+            error("TIMEOUT", "网络请求超时，结果未知；请核实服务端结果，不要自动重试付费请求。")
         } catch (error: CapabilityDenied) {
             error("CAPABILITY_DENIED", error.message ?: "模块未声明所需能力。")
         } catch (error: IllegalArgumentException) {
@@ -137,7 +147,9 @@ class ModuleBackend(context: Context, private val store: ModuleStore = ModuleSto
         val method = args.optString("method").ifBlank { "GET" }.uppercase()
         val responseType = args.optString("responseType").ifBlank { "text" }
         require(responseType == "text" || responseType == "base64") { "responseType 仅支持 text / base64。" }
-        val timeout = args.optInt("timeoutMs", 15_000).coerceIn(1_000, 60_000)
+        val timeout = networkTimeoutMillis(
+            if (args.isNull("timeoutMs")) null else args.getInt("timeoutMs"),
+        )
         val connection = URL(url).openConnection() as HttpURLConnection
         try {
             connection.connectTimeout = timeout
@@ -213,6 +225,13 @@ class ModuleBackend(context: Context, private val store: ModuleStore = ModuleSto
             .put("error", JSONObject().put("code", code).put("message", message))
 
     companion object {
+        /** Matches HttpURLConnection: zero disables its connection/read timeout. */
+        internal fun networkTimeoutMillis(configured: Int?): Int {
+            val timeout = configured ?: 15_000
+            require(timeout >= 0) { "timeoutMs 不能为负数；0 表示不设超时。" }
+            return timeout
+        }
+
         private const val MAX_VALUE_CHARS = 256 * 1024
         private const val MAX_READ_CHARS = 512 * 1024
         private const val MAX_WRITE_CHARS = 1024 * 1024

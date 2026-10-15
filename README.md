@@ -114,6 +114,12 @@ try {
 ./gradlew :app:assembleRelease
 ```
 
+WebUI 的异步回调、并发请求与超时错误传递另有无依赖 Node.js 回归测试：
+
+```sh
+node --test app/src/test/js/bridge-shim.test.cjs
+```
+
 Debug 和 Release 均使用本地 `signing/release.jks` 签名，别名和 Keychain 定位来自 `signing/keychain.properties`。密码只从 Keychain 读取，不输出或写入文件；缺少签名文件或无法读取 Keychain 时构建失败。整个 signing 目录不提交 Git。签名冲突不能通过自动卸载绕过。
 
 资源路径及 HostVar 行为依据当前实测 Xiaomi 设备，其他设备和系统版本需单独验证。

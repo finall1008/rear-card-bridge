@@ -98,7 +98,7 @@ await bridge.files.remove("cache/weather.json");
 
 ### 网络请求
 
-需要 `network` 能力。由卡片桥在后台线程执行，结果异步返回。
+需要 `network` 能力。卡片和设置页都由卡片桥在后台线程执行请求，按请求 ID 异步完成对应 Promise。等待网络期间，设置页 JS、计时器、进度显示和交互不被该调用阻塞。
 
 ```js
 const res = await bridge.net.request({
@@ -106,11 +106,13 @@ const res = await bridge.net.request({
   method: "GET",                 // 默认 GET
   headers: { "Accept": "application/json" },
   responseType: "text",          // "text"（默认）或 "base64"
-  timeoutMs: 15000               // 1s–60s
+  timeoutMs: 180000              // 可选；不传默认 15000，0 表示不设超时
 });
 // res: { status: 200, body: "..." } 或 { status, bodyBase64 }
 ```
 
+- `timeoutMs` 同时设置连接超时和读取等待超时，不是请求总耗时限制。未传或传 `null` 时默认 15000 毫秒；正整数原样传给 Android 网络接口，不设 60 秒等业务上限；`0` 关闭这两项超时；负数报 `INVALID_ARGS`。
+- 网络超时 reject 一个 `code === 'TIMEOUT'` 的 Error，提示“结果未知”。服务端可能已经受理，尤其是付费请求，不得将超时视为未执行并自动重试。WebUI 桥不会自动重试该请求。
 - `POST` 等带请求体时传 `body`（字符串）或 `bodyBase64`。
 - `responseType: "json"` 不存在：文本响应用 `JSON.parse(res.body)` 即可。
 - 限制：请求体 ≤ 1MB，响应 ≤ 8MB。不要在背屏上做大文件下载。
@@ -160,6 +162,7 @@ image.src = "data:image/png;base64," + res.bodyBase64;
 
 - 背屏休眠时卡片不运行。休眠期间**不会**定时执行 JS；卡片恢复显示时应检查数据时间戳决定是否重新拉取。
 - 卡片脚本热更新会重新执行脚本；进行中的异步请求会被取消（Promise 不再 resolve）。
+- 设置页销毁后不再向该页面回调；关闭页面不会撤销服务端已受理的请求。
 - 配置和业务数据保存在卡片桥中，卸载模块会一并删除。
 - 不要把访问令牌、密码写进模块包或日志。
 
