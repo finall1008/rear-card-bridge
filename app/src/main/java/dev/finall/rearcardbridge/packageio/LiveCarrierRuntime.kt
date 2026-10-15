@@ -170,7 +170,11 @@ internal object LiveCarrierRuntime {
     reqPrefix: 'r' + Date.now().toString(36) + '-' + Math.floor(Math.random() * 1679616).toString(36) + '-',
     outboxBusy: false, outboxSince: 0, queue: [], pending: {},
     lastRequests: [], lastAcks: [], ackIds: [], config: {}, configRev: -1, refreshRev: -1,
-    configListeners: [], refreshListeners: []
+    configListeners: [], refreshListeners: [],
+    // Shared snapshot state: snapshotRev is the backend revision last reflected in
+    // localStorage; snapshotPending counts in-flight card.saveSnapshot submissions so a
+    // payload carrying the still-older backend copy cannot clobber a fresh local write.
+    snapshotRev: -1, snapshotPending: 0
   };
   function toError(result) {
     var info = result && result.error || {};
@@ -298,6 +302,13 @@ internal object LiveCarrierRuntime {
     }
     pump(true);
   }
+  // The same localStorage entry is read synchronously by the module's first frame.
+  function applySnapshot(value) {
+    try {
+      var text = JSON.stringify(value);
+      if (localStorage.getItem('bridge_snapshot') !== text) localStorage.setItem('bridge_snapshot', text);
+    } catch (error) { console.log('RearCardBridgeLive snapshot write error: ' + String(error)); }
+  }
   var bridge = {
     module: {
       info: function () { return invoke('module.info'); }
@@ -327,16 +338,39 @@ internal object LiveCarrierRuntime {
       requestRefresh: function () { return invoke('card.requestRefresh'); },
       // Synchronous display snapshot. The host rebuilds the JS runtime on every AOD
       // recovery and grants only one or two frames, so the first meaningful frame
-      // must be drawn from data available before any bridge round trip.
+      // must be drawn from data available before any bridge round trip. The backend
+      // copy (written by background refresh) is injected into localStorage by
+      // receive() before the module script executes, so the first readSnapshot
+      // already sees it without any startup request.
       readSnapshot: function () {
         try {
           var text = localStorage.getItem('bridge_snapshot');
           return text ? JSON.parse(text) : null;
         } catch (error) { return null; }
       },
+      // The local write is synchronous and completes before this returns. When the
+      // value actually changes and the bridge is enabled, the same value is also
+      // submitted to the shared backend store (card.saveSnapshot) and this returns a
+      // Promise resolving with the new backend revision once accepted (rejecting when
+      // the shared copy failed). Identical content is neither rewritten locally nor
+      // re-uploaded: cached card state is never pushed on its own — only an explicit,
+      // value-changing call syncs the shared copy.
       saveSnapshot: function (value) {
         var text = JSON.stringify(value === undefined ? null : value);
-        if (localStorage.getItem('bridge_snapshot') !== text) localStorage.setItem('bridge_snapshot', text);
+        if (localStorage.getItem('bridge_snapshot') === text) return;
+        localStorage.setItem('bridge_snapshot', text);
+        if (!bridgeEnabled) return;
+        bs.snapshotPending += 1;
+        return invoke('card.saveSnapshot', { value: value === undefined ? null : value })
+          .then(function (rev) {
+            bs.snapshotPending -= 1;
+            bs.snapshotRev = Math.max(bs.snapshotRev, rev);
+            return rev;
+          }, function (error) {
+            bs.snapshotPending -= 1;
+            console.log('RearCardBridgeLive snapshot save error: ' + String(error));
+            throw error;
+          });
       }
     },
     log: {
@@ -356,6 +390,17 @@ internal object LiveCarrierRuntime {
     var payload;
     try { payload = JSON.parse(raw); }
     catch (error) { console.log('RearCardBridgeLive payload error: ' + String(error)); return; }
+    // Shared snapshot: handled independently of the script revision, before the
+    // revision check below, so a backend save refreshes localStorage without
+    // re-executing the module script. Applied synchronously —
+    // on the first payload the module script's readSnapshot already sees the
+    // backend copy. While a local save is in flight the polled payload may still
+    // carry the older backend copy, so it must not clobber the fresh local write.
+    if (typeof payload.snapshotRev === 'number' && payload.snapshotRev > bs.snapshotRev &&
+        bs.snapshotPending === 0 && payload.snapshot !== undefined) {
+      bs.snapshotRev = payload.snapshotRev;
+      applySnapshot(payload.snapshot);
+    }
     if (payload.revision === seenRevision) return;
     seenRevision = payload.revision;
     var generation = ++loadGeneration;

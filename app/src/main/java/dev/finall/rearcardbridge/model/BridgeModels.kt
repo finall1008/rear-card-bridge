@@ -26,6 +26,7 @@ data class ModuleInfo(
     val groupId: String?,
     val boundCardId: String?,
     val boundCardTitle: String?,
+    val backgroundIntervalMinutes: Int? = null,
 )
 enum class ShizukuStatus { NOT_RUNNING, AUTH_REQUIRED, CONNECTING, READY, ERROR }
 data class ShizukuState(val status: ShizukuStatus, val message: String = "")
@@ -52,5 +53,7 @@ data class BridgeUiState(
     val modulesLoaded: Boolean = false,
     val activeModuleId: String? = null,
     val moduleInstallEvent: Long = 0,
+    val backgroundRefreshRunning: Boolean = false,
+    val backgroundRefreshMessage: String = "后台刷新未开启",
 )
 data class PreparedCardPackage(val file: File, val entryNames: List<String>)

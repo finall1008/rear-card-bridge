@@ -57,6 +57,7 @@ function makeFixture(t) {
   write('card/main.js', CARD_SOURCE);
   write('card/assets/logo.bin', Buffer.from([9, 8, 7, 6]));
   write('webroot/index.html', WEBROOT_SOURCE);
+  write('background/main.js', 'async function refresh() { await bridge.card.saveSnapshot({ value: 42 }); }\n');
   // 杂物：绝不能出现在输出 ZIP 里
   write('node_modules/left-pad/index.js', 'module.exports = function (s) { return s; };');
   write('package.json', '{"name":"cruft"}');
@@ -104,12 +105,12 @@ test('card 脚本编译为生成器纯 JS，源码保持 async/await，产物可
   assert.equal(sandbox.done, true);
 });
 
-test('webroot 与非 JS 内容按原始字节保留，webroot 不被编译', async (t) => {
+test('webroot、background 与非 JS 内容按原始字节保留，不被编译', async (t) => {
   const { sourceDir, outPath } = makeFixture(t);
   await buildModuleZip({ sourceDir, outPath });
   const entries = unzipSync(fs.readFileSync(outPath));
 
-  const pairs = ['webroot/index.html', 'card/index.html', 'module.json', 'icon.png', 'card/assets/logo.bin'];
+  const pairs = ['webroot/index.html', 'background/main.js', 'card/index.html', 'module.json', 'icon.png', 'card/assets/logo.bin'];
   for (const rel of pairs) {
     const source = fs.readFileSync(path.join(sourceDir, ...rel.split('/')));
     assert.equal(readEntry(entries, rel).compare(source), 0, `${rel} 必须逐字节一致`);
@@ -129,6 +130,7 @@ test('ZIP 形状只含模块根，不含 node_modules/工具杂物；CLI 成功�
 
   const entries = unzipSync(fs.readFileSync(outPath));
   assert.deepEqual(Object.keys(entries).sort(), [
+    'background/main.js',
     'card/assets/logo.bin',
     'card/index.html',
     'card/main.js',

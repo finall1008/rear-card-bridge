@@ -7,8 +7,8 @@ const USAGE = `用法: card-build <模块源目录> <输出 ZIP>
 把 <模块源目录>（根目录直接是 module.json）打成安装用模块 ZIP：
   - card/**/*.js 的原生 async/await 用 Babel 编译为生成器纯 JS；
     输出是纯 JS，执行时使用运行时注入的全局 Promise。
-  - module.json、icon.png、card 非 JS 文件、webroot/** 按原始字节打包；
-    webroot/ 是浏览器页面，保持原生 Promise/fetch，不编译。
+  - module.json、icon.png、card 非 JS 文件、webroot/**、background/** 按原始字节打包；
+    webroot/ 和 background/ 运行在 WebView，保持原生 async/await，不编译。
   - 只收录上述模块根，node_modules / 工具源码等不会进包。
   - 语法错误会报出出错文件并以非零状态退出。
 

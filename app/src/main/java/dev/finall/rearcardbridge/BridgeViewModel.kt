@@ -12,6 +12,7 @@ import dev.finall.rearcardbridge.model.BridgeUiState
 import dev.finall.rearcardbridge.model.ModuleInfo
 import dev.finall.rearcardbridge.model.OperationResult
 import dev.finall.rearcardbridge.model.ShizukuStatus
+import dev.finall.rearcardbridge.module.BackgroundRefreshService
 import dev.finall.rearcardbridge.module.GitInstall
 import dev.finall.rearcardbridge.module.ModuleInstaller
 import dev.finall.rearcardbridge.module.ModuleStore
@@ -50,6 +51,12 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
                     mutableState.value.shizuku.status != ShizukuStatus.READY
                 mutableState.update { it.copy(shizuku = connection) }
                 if (becameReady) refresh()
+            }
+        }
+        viewModelScope.launch {
+            BackgroundRefreshService.state.collect { refresh ->
+                mutableState.update { it.copy(backgroundRefreshRunning = refresh.running,
+                    backgroundRefreshMessage = refresh.message) }
             }
         }
         client.connect()
@@ -105,7 +112,8 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
                 versionCode = manifest.versionCode, description = manifest.description,
                 author = manifest.author, capabilities = manifest.capabilities,
                 hasWebui = manifest.hasWebui, source = installed.source,
-                groupId = group?.id, boundCardId = group?.cardId, boundCardTitle = group?.cardTitle)
+                groupId = group?.id, boundCardId = group?.cardId, boundCardTitle = group?.cardTitle,
+                backgroundIntervalMinutes = manifest.backgroundIntervalMinutes)
         }) }
     }
 

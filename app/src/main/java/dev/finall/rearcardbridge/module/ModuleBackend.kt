@@ -4,6 +4,8 @@ import android.content.Context
 import android.util.Base64
 import android.util.Log
 import dev.finall.rearcardbridge.live.ContentOperations
+import dev.finall.rearcardbridge.live.LiveContentContract
+import dev.finall.rearcardbridge.live.LiveContentStore
 import java.io.File
 import java.net.SocketTimeoutException
 import org.json.JSONArray
@@ -16,7 +18,10 @@ import org.json.JSONObject
  * Local read-modify-write operations are serialized; a pending network request does not
  * hold that lock or block settings/configuration operations.
  */
-class ModuleBackend(context: Context, private val store: ModuleStore = ModuleStore(context)) {
+class ModuleBackend(
+    private val context: Context,
+    private val store: ModuleStore = ModuleStore(context),
+) {
     fun execute(moduleId: String, op: String, args: JSONObject?): JSONObject {
         return try {
             val module = store.get(moduleId)
@@ -138,14 +143,31 @@ class ModuleBackend(context: Context, private val store: ModuleStore = ModuleSto
                 store.bumpRefreshRev(moduleId)
                 true
             }
+            // Shared card display snapshot: same JSON value semantics as the card-side
+            // bridge.card.saveSnapshot. The background runner saves through this op; the
+            // live provider injects the stored copy into the next payload query.
+            "card.saveSnapshot" -> {
+                val value = args.opt("value") ?: JSONObject.NULL
+                require(value.toString().length <= MAX_SNAPSHOT_CHARS) { "快照内容过大。" }
+                val rev = store.writeSnapshot(moduleId, value)
+                notifyLiveSnapshot(moduleId)
+                rev
+            }
             else -> throw IllegalArgumentException("未知操作：$op")
         }
 
+    /** Snapshot-only updates refresh the carrier's cache without re-executing its script. */
+    private fun notifyLiveSnapshot(moduleId: String) {
+        val binding = LiveContentStore(context).bindings().firstOrNull {
+            it.sourcePackage == context.packageName && it.key == moduleId
+        } ?: return
+        context.contentResolver.notifyChange(LiveContentContract.uri(binding.id), null)
+    }
+
     /**
-     * net.request runs on the caller's worker (bridge executor / settings IO) and
-     * stays outside [ContentOperations.lock]. `cookies: true` swaps the per-module
-     * profile jar into [ModuleHttp] for this call only; without it, caller headers
-     * — including an explicit Cookie header — are sent untouched.
+     * net.request runs on the caller's worker (card, settings or background refresh)
+     * outside [ContentOperations.lock]. `cookies: true` uses this module's profile
+     * on all three paths; ordinary requests do not access the profile.
      */
     private fun httpRequest(moduleId: String, args: JSONObject): JSONObject {
         val url = args.optString("url")
@@ -257,6 +279,10 @@ class ModuleBackend(context: Context, private val store: ModuleStore = ModuleSto
         }
 
         private const val MAX_VALUE_CHARS = 256 * 1024
+        // The existing maimai profile + image snapshot is ~352K characters. Keep it
+        // within the same 512K boundary as files.readText, rather than truncating it
+        // to the smaller generic key-value storage limit during background integration.
+        private const val MAX_SNAPSHOT_CHARS = 512 * 1024
         private const val MAX_READ_CHARS = 512 * 1024
         private const val MAX_WRITE_CHARS = 1024 * 1024
         private const val MAX_BODY_BYTES = 1024 * 1024
