@@ -12,7 +12,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.finall.rearcardbridge.ui.BridgeScreen
-import dev.finall.rearcardbridge.ui.ModuleSettingsActivity
 
 class MainActivity : ComponentActivity() {
     private val viewModel: BridgeViewModel by viewModels()
@@ -33,9 +32,6 @@ class MainActivity : ComponentActivity() {
                     .putExtra("revision", viewModel.state.value.contentRevision))
         }
         viewModel.onOpenRearSettingsRequested = ::openRearSettings
-        viewModel.onOpenModuleSettings = { id ->
-            startActivity(ModuleSettingsActivity.intent(this, id))
-        }
         setContent {
             val state = viewModel.state.collectAsStateWithLifecycle().value
             BridgeScreen(state = state,
@@ -48,8 +44,7 @@ class MainActivity : ComponentActivity() {
                 onInstallModuleGit = viewModel::installModuleGit,
                 onSelectModule = viewModel::selectModule,
                 onUninstallModule = viewModel::uninstallModule,
-                onUpdateModule = viewModel::updateModule,
-                onOpenModuleSettings = viewModel::openModuleSettings)
+                onUpdateModule = viewModel::updateModule)
         }
         if (savedInstanceState == null) handleIntent(intent)
     }
@@ -105,7 +100,6 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         viewModel.onOperationResult = null
         viewModel.onOpenRearSettingsRequested = null
-        viewModel.onOpenModuleSettings = null
         super.onDestroy()
     }
     companion object {

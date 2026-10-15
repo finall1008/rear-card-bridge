@@ -45,7 +45,7 @@ weather.zip
 
 ## 2. 基础 API
 
-卡片（QuickJS）和设置页（WebView）暴露**同一个 `bridge` 对象**，语义一致、数据共享。所有读写方法返回 Promise；失败时 reject 一个带 `code` 的 Error。
+卡片（QuickJS）和设置页（WebView）共用 `bridge.config`、`bridge.storage`、`bridge.files` 和卡片联动操作，数据共享。桥接读写方法返回 Promise；失败时 reject 一个带 `code` 的 Error。**`bridge.net` 仅在背屏卡片中提供；设置页直接使用 WebView 的 `fetch` / `XMLHttpRequest`，不经过原生网络后端。**
 
 设置页注意：在 `webroot/index.html` 里**第一个**引入桥接脚本：
 
@@ -96,9 +96,25 @@ const list = await bridge.files.list("cache");      // [{name, dir, size}]
 await bridge.files.remove("cache/weather.json");
 ```
 
-### 网络请求
+### 设置页网络请求（WebView）
 
-需要 `network` 能力。卡片和设置页都由卡片桥在后台线程执行请求，按请求 ID 异步完成对应 Promise。等待网络期间，设置页 JS、计时器、进度显示和交互不被该调用阻塞。
+设置页是普通网页，直接使用浏览器 API，不提供 `bridge.net`，也不要求模块声明原生 `network` 能力：
+
+```js
+const response = await fetch("https://example.com/api", {
+  headers: { "Accept": "application/json" }
+});
+const data = await response.json();
+```
+
+- 本地 `webroot/index.html` 通过 `file://` 加载，开启 WebView 的文件访问、文件间访问和文件页跨来源访问；不额外安装目录白名单或文件拦截规则。模块代码受信任，能访问的文件范围仍由 Android 应用权限决定。
+- HTTP(S) 请求由 WebView 直接发送，不代理到原生后端、不替换浏览器网络 API、不修改 TLS 证书校验。文件页面的跨来源访问开关用于放开远程接口的 CORS 访问。
+- `fetch` 的目标地址应为 HTTP(S)；Chromium 的 `fetch` 本身不支持 `file://` / `content://` 目标，本地文件请求可以用 XMLHttpRequest。
+- 超时、取消、流式读取等由页面使用浏览器 API 控制，例如 `AbortController`；原生背屏网络接口的超时和大小限制不适用于设置页。
+
+### 背屏网络请求（QuickJS）
+
+需要 `network` 能力。由卡片桥在后台线程执行，结果异步回传到背屏卡片。
 
 ```js
 const res = await bridge.net.request({
@@ -112,7 +128,7 @@ const res = await bridge.net.request({
 ```
 
 - `timeoutMs` 同时设置连接超时和读取等待超时，不是请求总耗时限制。未传或传 `null` 时默认 15000 毫秒；正整数原样传给 Android 网络接口，不设 60 秒等业务上限；`0` 关闭这两项超时；负数报 `INVALID_ARGS`。
-- 网络超时 reject 一个 `code === 'TIMEOUT'` 的 Error，提示“结果未知”。服务端可能已经受理，尤其是付费请求，不得将超时视为未执行并自动重试。WebUI 桥不会自动重试该请求。
+- 网络超时 reject 一个 `code === 'TIMEOUT'` 的 Error，提示“结果未知”。服务端可能已经受理，尤其是付费请求，不得将超时视为未执行并自动重试。不要编写自动重试该请求的逻辑。
 - `POST` 等带请求体时传 `body`（字符串）或 `bodyBase64`。
 - `responseType: "json"` 不存在：文本响应用 `JSON.parse(res.body)` 即可。
 - 限制：请求体 ≤ 1MB，响应 ≤ 8MB。不要在背屏上做大文件下载。

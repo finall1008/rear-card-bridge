@@ -49,6 +49,7 @@ data class BridgeUiState(
     val error: String? = null,
     val lastReplacedCardId: String? = null,
     val modules: List<ModuleInfo> = emptyList(),
+    val modulesLoaded: Boolean = false,
     val activeModuleId: String? = null,
     val moduleInstallEvent: Long = 0,
 )

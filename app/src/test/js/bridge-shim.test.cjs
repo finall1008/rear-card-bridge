@@ -9,7 +9,9 @@ const shim = readFileSync(resolve(__dirname, '../../main/assets/bridge-shim.js')
 function loadBridge(submit) {
   const requests = [];
   const intervals = [];
-  const window = { BridgeNative: {
+  const fetch = () => Promise.resolve({ ok: true });
+  const XMLHttpRequest = function () {};
+  const window = { fetch, XMLHttpRequest, BridgeNative: {
     invoke(id, payload) {
       const request = { id, ...JSON.parse(payload) };
       requests.push(request);
@@ -21,19 +23,19 @@ function loadBridge(submit) {
     setInterval(fn) { intervals.push(fn); },
   });
   return {
-    bridge: window.bridge, requests,
+    bridge: window.bridge, requests, window, fetch, XMLHttpRequest,
     poll() { intervals[0](); },
     complete(id, result) { window.__rearCardBridgeComplete(id, result); },
   };
 }
 
-// A held native request stands in for a long network response. No real HTTP or UI needed.
-test('pending network request leaves JS and configuration polling responsive', async () => {
+// A held storage request must not block JS or the asynchronous configuration poll.
+test('pending data request leaves JS and configuration polling responsive', async () => {
   const h = loadBridge();
   let settled = false;
-  const network = h.bridge.net.request({ url: 'https://example.com/', timeoutMs: 180000 })
+  const data = h.bridge.storage.get('count')
     .then(value => { settled = true; return value; });
-  assert.equal(h.requests[0].args.timeoutMs, 180000);
+  assert.equal(h.requests[0].op, 'storage.get');
 
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(settled, false);
@@ -49,8 +51,8 @@ test('pending network request leaves JS and configuration polling responsive', a
   assert.equal(title, 'still responsive');
   assert.equal(settled, false);
 
-  h.complete(h.requests[0].id, { ok: true, value: { status: 200, body: 'done' } });
-  assert.equal((await network).body, 'done');
+  h.complete(h.requests[0].id, { ok: true, value: 42 });
+  assert.equal(await data, 42);
 });
 
 test('out-of-order responses complete the matching Promises', async () => {
@@ -65,21 +67,13 @@ test('out-of-order responses complete the matching Promises', async () => {
   h.complete(h.requests[0].id, { ok: true, value: 'duplicate ignored' });
 });
 
-test('timeout rejects as result unknown without resubmitting a paid request', async () => {
+test('WebUI does not expose native networking or replace browser network APIs', async () => {
   const h = loadBridge();
-  const request = h.bridge.net.request({ url: 'https://example.com/paid', method: 'POST', timeoutMs: 0 });
-  assert.equal(h.requests[0].args.timeoutMs, 0);
-  const rejected = assert.rejects(request, error => {
-    assert.equal(error.code, 'TIMEOUT');
-    assert.match(error.message, /结果未知/);
-    return true;
-  });
-  h.complete(h.requests[0].id, {
-    ok: false, error: { code: 'TIMEOUT', message: '网络请求超时，结果未知' },
-  });
-  await rejected;
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(h.requests.filter(r => r.op === 'net.request').length, 1);
+  assert.equal(h.bridge.net, undefined);
+  assert.equal(h.window.fetch, h.fetch);
+  assert.equal(h.window.XMLHttpRequest, h.XMLHttpRequest);
+  assert.equal((await h.window.fetch('https://example.com/')).ok, true);
+  assert.equal(h.requests.length, 0);
 });
 
 test('native submission failure rejects without retry', async () => {

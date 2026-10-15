@@ -39,7 +39,6 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
     private val operationLock = Mutex()
     var onOperationResult: ((OperationResult, String?) -> Unit)? = null
     var onOpenRearSettingsRequested: ((String?) -> OperationResult)? = null
-    var onOpenModuleSettings: ((String) -> Unit)? = null
 
     init {
         application.getExternalFilesDir(null)
@@ -98,7 +97,7 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
             synchronized(ContentOperations.lock) { moduleStore.list() to contentStore.bindings() }
         }
         val appPackage = getApplication<Application>().packageName
-        mutableState.update { it.copy(groups = groups, modules = modules.map { installed ->
+        mutableState.update { it.copy(groups = groups, modulesLoaded = true, modules = modules.map { installed ->
             val group = groups.firstOrNull { g -> g.sourcePackage == appPackage && g.key == installed.manifest.id }
             val manifest = installed.manifest
             ModuleInfo(id = manifest.id, name = manifest.name, version = manifest.version,
@@ -217,10 +216,6 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
         mutableState.update { it.copy(status = "模块已卸载。") }
     }
 
-    fun openModuleSettings(id: String) {
-        onOpenModuleSettings?.invoke(id)
-    }
-
     /** The bridge protocol is only wired for carriers backed by an installed module. */
     private fun moduleIdFor(group: ContentBinding): String? {
         if (group.sourcePackage != getApplication<Application>().packageName) return null
@@ -326,7 +321,6 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
     override fun onCleared() {
         onOperationResult = null
         onOpenRearSettingsRequested = null
-        onOpenModuleSettings = null
         client.close()
     }
 }

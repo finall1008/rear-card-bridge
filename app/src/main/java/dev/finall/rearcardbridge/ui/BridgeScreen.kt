@@ -2,7 +2,6 @@ package dev.finall.rearcardbridge.ui
 
 import android.content.Intent
 import android.net.Uri
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -14,6 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import dev.finall.rearcardbridge.BuildConfig
 import dev.finall.rearcardbridge.live.CarrierResourceState
@@ -27,11 +27,11 @@ import top.yukonga.miuix.kmp.icon.extended.ChevronForward
 import top.yukonga.miuix.kmp.icon.extended.GridView
 import top.yukonga.miuix.kmp.icon.extended.Home
 import top.yukonga.miuix.kmp.icon.extended.Settings
+import top.yukonga.miuix.kmp.nav.core.NavDisplay
+import top.yukonga.miuix.kmp.nav.core.rememberNavController
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.ThemeController
 import top.yukonga.miuix.kmp.window.WindowDialog
-
-private enum class HomePage { LIST, DETAIL, TARGETS }
 
 @Composable
 fun BridgeScreen(
@@ -49,92 +49,89 @@ fun BridgeScreen(
     onSelectModule: (String) -> Unit,
     onUninstallModule: (String) -> Unit,
     onUpdateModule: (String) -> Unit,
-    onOpenModuleSettings: (String) -> Unit,
 ) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
-    var page by rememberSaveable { mutableStateOf(HomePage.LIST) }
-    var detailId by rememberSaveable { mutableStateOf<String?>(null) }
+    val nav = rememberNavController<BridgeRoute>(BridgeRoute.Root)
     var handledInstall by rememberSaveable { mutableLongStateOf(0L) }
     var showGit by remember { mutableStateOf(false) }
     var confirmWrite by remember { mutableStateOf(false) }
     var confirmRestore by remember { mutableStateOf(false) }
     var confirmUninstall by remember { mutableStateOf(false) }
-    val module = state.modules.firstOrNull { it.id == detailId }
+    val topRoute = nav.backStack.last()
+    val moduleId = when (topRoute) {
+        is BridgeRoute.ModuleDetail -> topRoute.moduleId
+        is BridgeRoute.Targets -> topRoute.moduleId
+        is BridgeRoute.ModuleSettings -> topRoute.moduleId
+        else -> null
+    }
+    val module = state.modules.firstOrNull { it.id == moduleId }
     val ready = state.shizuku.status == ShizukuStatus.READY
-    val active = module != null && module.id == state.activeModuleId
-    val rootPage = tab == 1 || page == HomePage.LIST
 
     LaunchedEffect(state.moduleInstallEvent) {
         if (state.moduleInstallEvent > handledInstall) {
             handledInstall = state.moduleInstallEvent
-            detailId = state.activeModuleId
-            tab = 0
-            page = if (state.boundCardId == null) HomePage.TARGETS else HomePage.DETAIL
+            state.activeModuleId?.let { id ->
+                tab = 0
+                nav.popUntil { it == BridgeRoute.Root }
+                nav.push(BridgeRoute.ModuleDetail(id))
+                if (state.boundCardId == null) nav.push(BridgeRoute.Targets(id))
+            }
         }
     }
-    LaunchedEffect(state.modules, state.busy) {
-        if (!state.busy && detailId != null && module == null) {
-            detailId = null
-            page = HomePage.LIST
+    // Restored routes wait for the installed modules to load before checking their IDs.
+    LaunchedEffect(moduleId, state.modulesLoaded, state.modules, state.busy, state.activeModuleId) {
+        if (moduleId != null && state.modulesLoaded && !state.busy) {
+            if (module == null) nav.popUntil { it == BridgeRoute.Root }
+            else if (state.activeModuleId != moduleId) onSelectModule(moduleId)
         }
     }
-    val back: () -> Unit = {
-        when {
-            tab == 1 -> tab = 0
-            page == HomePage.TARGETS -> page = HomePage.DETAIL
-            else -> page = HomePage.LIST
-        }
-    }
-    BackHandler(tab == 1 || page != HomePage.LIST) { back() }
-    val title = when {
-        tab == 1 -> "设置与关于"
-        page == HomePage.TARGETS -> "选择替换目标"
-        page == HomePage.DETAIL -> module?.name ?: "模块详情"
-        else -> "背屏卡片桥"
-    }
-
+    val back: () -> Unit = { nav.pop() }
     val theme = remember { ThemeController() }
     MiuixTheme(controller = theme) {
-        Scaffold(
-            topBar = {
-                if (rootPage) TopAppBar(title = title)
-                else SmallTopAppBar(title = title, navigationIcon = {
-                    IconButton(onClick = back) {
-                        Icon(MiuixIcons.Back, contentDescription = "返回")
+        NavDisplay(navController = nav, modifier = Modifier.fillMaxSize()) {
+            entry<BridgeRoute.Root> {
+                Scaffold(
+                    topBar = { TopAppBar(title = if (tab == 1) "设置与关于" else "背屏卡片桥") },
+                    bottomBar = {
+                        FloatingNavigationBar {
+                            FloatingNavigationBarItem(selected = tab == 0,
+                                onClick = { tab = 0 }, icon = MiuixIcons.Home, label = "主页")
+                            FloatingNavigationBarItem(selected = tab == 1,
+                                onClick = { tab = 1 }, icon = MiuixIcons.Settings, label = "设置与关于")
+                        }
+                    },
+                ) { padding ->
+                    Box(Modifier.fillMaxSize().padding(padding)) {
+                        if (tab == 1) SettingsPage(state, onAuthorize, onRefresh)
+                        else ModuleListPage(state, onInstallModuleZip,
+                            onInstallGit = { showGit = true }, onOpenModule = { id ->
+                                nav.push(BridgeRoute.ModuleDetail(id))
+                            })
                     }
-                })
-            },
-            bottomBar = {
-                if (rootPage) FloatingNavigationBar {
-                    FloatingNavigationBarItem(selected = tab == 0,
-                        onClick = { tab = 0; page = HomePage.LIST }, icon = MiuixIcons.Home, label = "主页")
-                    FloatingNavigationBarItem(selected = tab == 1,
-                        onClick = { tab = 1 }, icon = MiuixIcons.Settings, label = "设置与关于")
                 }
-            },
-        ) { padding ->
-            Box(Modifier.fillMaxSize().padding(padding)) {
-                when {
-                    tab == 1 -> SettingsPage(state, onAuthorize, onRefresh)
-                    page == HomePage.LIST -> ModuleListPage(state, onInstallModuleZip,
-                        onInstallGit = { showGit = true }, onOpenModule = {
-                            detailId = it; page = HomePage.DETAIL; onSelectModule(it)
-                        })
-                    module == null || !active -> Card(Modifier.padding(16.dp).fillMaxWidth()) {
-                        BasicComponent(title = "正在读取模块…")
-                    }
-                    page == HomePage.TARGETS -> TargetPickerPage(state, ready, onSelectCard) {
-                        confirmWrite = true
-                    }
-                    else -> ModuleDetailPage(state, module,
-                        onOpenSettings = { onOpenModuleSettings(module.id) },
-                        onUpdate = { onUpdateModule(module.id) },
+            }
+            entry<BridgeRoute.ModuleDetail> { route ->
+                val detail = state.modules.firstOrNull { it.id == route.moduleId }
+                ModulePageScaffold(detail?.name ?: "模块详情", back) {
+                    if (detail == null || state.activeModuleId != route.moduleId) ModuleLoadingPage()
+                    else ModuleDetailPage(state, detail,
+                        onOpenSettings = { nav.push(BridgeRoute.ModuleSettings(route.moduleId)) },
+                        onUpdate = { onUpdateModule(route.moduleId) },
                         onUninstall = { confirmUninstall = true },
-                        onPickTarget = { page = HomePage.TARGETS },
+                        onPickTarget = { nav.push(BridgeRoute.Targets(route.moduleId)) },
                         onRestore = { confirmRestore = true },
-                        onOpenRearSettings = { onOpenRearSettings(module.boundCardId) },
+                        onOpenRearSettings = { onOpenRearSettings(detail.boundCardId) },
                         onConfirmReapplied = onConfirmReapplied)
                 }
+            }
+            entry<BridgeRoute.Targets> { route ->
+                ModulePageScaffold("选择替换目标", back) {
+                    if (state.activeModuleId != route.moduleId) ModuleLoadingPage()
+                    else TargetPickerPage(state, ready, onSelectCard) { confirmWrite = true }
+                }
+            }
+            entry<BridgeRoute.ModuleSettings> { route ->
+                ModuleSettingsPage(moduleId = route.moduleId, onBack = back)
             }
         }
 
@@ -161,7 +158,7 @@ fun BridgeScreen(
             onDismissRequest = { confirmWrite = false }) {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(onClick = { confirmWrite = false }, modifier = Modifier.weight(1f)) { Text("取消") }
-                Button(onClick = { confirmWrite = false; page = HomePage.DETAIL; onInstallCarrier() },
+                Button(onClick = { confirmWrite = false; nav.pop(); onInstallCarrier() },
                     modifier = Modifier.weight(1f), enabled = !state.busy,
                     colors = ButtonDefaults.buttonColorsPrimary()) { Text("写入") }
             }
@@ -195,6 +192,22 @@ fun BridgeScreen(
 }
 
 @Composable
+private fun ModulePageScaffold(title: String, onBack: () -> Unit, content: @Composable () -> Unit) {
+    Scaffold(topBar = {
+        SmallTopAppBar(title = title, navigationIcon = {
+            IconButton(onClick = onBack) { Icon(MiuixIcons.Back, contentDescription = "返回") }
+        })
+    }) { padding ->
+        Box(Modifier.fillMaxSize().padding(padding)) { content() }
+    }
+}
+
+@Composable
+private fun ModuleLoadingPage() {
+    Card(Modifier.padding(16.dp).fillMaxWidth()) { BasicComponent(title = "正在读取模块…") }
+}
+
+@Composable
 private fun ModuleListPage(state: BridgeUiState, onInstallZip: () -> Unit,
     onInstallGit: () -> Unit, onOpenModule: (String) -> Unit) {
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp),
@@ -203,10 +216,12 @@ private fun ModuleListPage(state: BridgeUiState, onInstallZip: () -> Unit,
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(onClick = onInstallZip, modifier = Modifier.weight(1f),
                     colors = ButtonDefaults.buttonColorsPrimary(), enabled = !state.busy) {
-                    Text("导入 ZIP", maxLines = 1)
+                    Text("导入 ZIP", maxLines = 1, style = MiuixTheme.textStyles.button,
+                        fontFamily = FontFamily.SansSerif)
                 }
                 Button(onClick = onInstallGit, modifier = Modifier.weight(1f), enabled = !state.busy) {
-                    Text("仓库安装", maxLines = 1)
+                    Text("仓库安装", maxLines = 1, style = MiuixTheme.textStyles.button,
+                        fontFamily = FontFamily.SansSerif)
                 }
             }
         }

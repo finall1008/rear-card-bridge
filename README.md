@@ -34,7 +34,7 @@ module.zip
 
 同一模块由 `module.json` 的 `id` 标识，更新包的 `versionCode` 必须递增。更新保留配置和业务数据，卸载则删除这些数据。仓库安装支持 GitHub、GitLab、Gitee 的公开仓库归档；前端须预先构建为静态文件，手机上不执行安装脚本或构建脚本。
 
-背屏端运行 MAML / QuickJS / Canvas，不是 WebView；设置页运行在卡片桥的 WebView 中。两端共用 `bridge.config`、`bridge.storage`、`bridge.files`、`bridge.net` 等接口，详见开发指南。
+背屏端运行 MAML / QuickJS / Canvas，不是 WebView；设置页运行在卡片桥的 WebView 中。两端共用 `bridge.config`、`bridge.storage`、`bridge.files` 等数据接口。设置页联网直接用 WebView 的 `fetch` / XMLHttpRequest；`bridge.net` 仅用于背屏卡片，详见开发指南。
 
 ## 热更新和重新应用
 
@@ -107,14 +107,14 @@ try {
 
 本地目标来自主题管理器已提取的 `.ai_app/<productId>_extracted/rearscreen` 资源。首次原始备份与前一版本保存在本版本应用对应的外部 files/backups 目录；恢复后仍需系统重新应用。
 
-构建需要 JDK 17+ 和 Android SDK 37：
+构建需要 JDK 21+ 和 Android SDK 37：
 
 ```sh
 ./gradlew :app:assembleDebug :app:testDebugUnitTest
 ./gradlew :app:assembleRelease
 ```
 
-WebUI 的异步回调、并发请求与超时错误传递另有无依赖 Node.js 回归测试：
+WebUI 的异步数据回调、并发请求与浏览器网络 API 边界另有无依赖 Node.js 回归测试：
 
 ```sh
 node --test app/src/test/js/bridge-shim.test.cjs

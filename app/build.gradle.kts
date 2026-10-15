@@ -4,6 +4,7 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+    id("org.jetbrains.kotlin.plugin.serialization")
 }
 android {
     namespace = "dev.finall.rearcardbridge"
@@ -16,7 +17,7 @@ android {
         versionName = "0.3.0"
     }
     buildFeatures { compose = true; aidl = true; buildConfig = true }
-    compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
+    compileOptions { sourceCompatibility = JavaVersion.VERSION_21; targetCompatibility = JavaVersion.VERSION_21 }
     // Local signing files are ignored by Git; never fall back to another signing key.
     val finallKeystore = rootProject.file("signing/release.jks")
     check(finallKeystore.isFile) {
@@ -83,15 +84,17 @@ android {
         }
     }
 }
-kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }
+kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_21) } }
 dependencies {
     implementation("androidx.core:core-ktx:1.17.0")
     implementation("androidx.activity:activity-compose:1.12.4")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.10.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
     implementation("top.yukonga.miuix.kmp:miuix-ui-android:0.9.4")
     implementation("top.yukonga.miuix.kmp:miuix-icons-android:0.9.4")
+    implementation("top.yukonga.miuix.kmp:miuix-nav-android:0.9.4")
     implementation("dev.rikka.shizuku:api:13.1.5")
     implementation("dev.rikka.shizuku:provider:13.1.5")
     implementation("org.jsoup:jsoup:1.21.2")
