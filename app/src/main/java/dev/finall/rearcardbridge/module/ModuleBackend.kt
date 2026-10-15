@@ -4,6 +4,8 @@ import android.content.Context
 import android.util.Base64
 import android.util.Log
 import dev.finall.rearcardbridge.live.ContentOperations
+import dev.finall.rearcardbridge.live.LiveContentContract
+import dev.finall.rearcardbridge.live.LiveContentStore
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
@@ -18,7 +20,10 @@ import org.json.JSONObject
  * Local read-modify-write operations are serialized; a pending network request does not
  * hold that lock or block settings/configuration operations.
  */
-class ModuleBackend(context: Context, private val store: ModuleStore = ModuleStore(context)) {
+class ModuleBackend(
+    private val context: Context,
+    private val store: ModuleStore = ModuleStore(context),
+) {
     fun execute(moduleId: String, op: String, args: JSONObject?): JSONObject {
         return try {
             val module = store.get(moduleId)
@@ -138,8 +143,30 @@ class ModuleBackend(context: Context, private val store: ModuleStore = ModuleSto
                 store.bumpRefreshRev(moduleId)
                 true
             }
+            // Shared card display snapshot: same JSON value semantics as the card-side
+            // bridge.card.saveSnapshot. The background runner saves through this op; the
+            // live provider injects the stored copy into the next payload query.
+            "card.saveSnapshot" -> {
+                val value = args.opt("value") ?: JSONObject.NULL
+                require(value.toString().length <= MAX_SNAPSHOT_CHARS) { "快照内容过大。" }
+                val rev = store.writeSnapshot(moduleId, value)
+                notifyLiveSnapshot(moduleId)
+                rev
+            }
             else -> throw IllegalArgumentException("未知操作：$op")
         }
+
+    /**
+     * Snapshot-only updates re-query the live content URI so a running carrier refreshes
+     * its cached snapshot through the payload; the payload revision is unchanged, so the
+     * runtime updates localStorage without re-executing the module script.
+     */
+    private fun notifyLiveSnapshot(moduleId: String) {
+        val binding = LiveContentStore(context).bindings().firstOrNull {
+            it.sourcePackage == context.packageName && it.key == moduleId
+        } ?: return
+        context.contentResolver.notifyChange(LiveContentContract.uri(binding.id), null)
+    }
 
     private fun httpRequest(args: JSONObject): JSONObject {
         val url = args.optString("url")
@@ -233,6 +260,9 @@ class ModuleBackend(context: Context, private val store: ModuleStore = ModuleSto
         }
 
         private const val MAX_VALUE_CHARS = 256 * 1024
+        // Snapshots share the storage value boundary: the same bytes also ride the
+        // bridge outbox and the live payload row (CursorWindow), so they stay at 256 KB.
+        private const val MAX_SNAPSHOT_CHARS = MAX_VALUE_CHARS
         private const val MAX_READ_CHARS = 512 * 1024
         private const val MAX_WRITE_CHARS = 1024 * 1024
         private const val MAX_BODY_BYTES = 1024 * 1024

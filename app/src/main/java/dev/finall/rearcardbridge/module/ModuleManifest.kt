@@ -5,7 +5,8 @@ import org.json.JSONObject
 /**
  * module.json of a card module package. A module zip contains:
  *   module.json (required), icon.png (optional),
- *   card/index.html + card/main.js (+ assets), and optionally webroot/index.html.
+ *   card/index.html + card/main.js (+ assets), optionally webroot/index.html,
+ *   and optionally background/main.js for scheduled background refresh.
  */
 data class ModuleManifest(
     val id: String,
@@ -17,6 +18,8 @@ data class ModuleManifest(
     val author: String,
     val capabilities: Set<String>,
     val hasWebui: Boolean,
+    /** Optional "background": {"intervalMinutes": N}; null when the module does not opt in. */
+    val backgroundIntervalMinutes: Int? = null,
 ) {
     companion object {
         const val API_VERSION = 2
@@ -45,7 +48,20 @@ data class ModuleManifest(
                     if (array != null) for (i in 0 until array.length()) add(array.optString(i))
                 },
                 entryNames = zipEntryNames,
+                backgroundIntervalMinutes = parseBackgroundInterval(obj),
             )
+        }
+
+        /** Reads the optional "background": {"intervalMinutes": N} declaration. */
+        private fun parseBackgroundInterval(obj: JSONObject): Int? {
+            if (obj.isNull("background")) return null
+            val background = obj.optJSONObject("background")
+                ?: throw IllegalArgumentException("模块 background 字段必须是对象。")
+            val raw = background.opt("intervalMinutes")
+            require(raw is Int || (raw is Long && raw in Int.MIN_VALUE..Int.MAX_VALUE)) {
+                "模块 background.intervalMinutes 必须是整数。"
+            }
+            return (raw as Number).toInt()
         }
 
         /** Pure validation; kept free of org.json so it can run in local unit tests. */
@@ -59,6 +75,7 @@ data class ModuleManifest(
             author: String,
             capabilities: Set<String>,
             entryNames: Set<String>,
+            backgroundIntervalMinutes: Int? = null,
         ): ModuleManifest {
             require(isValidModuleId(id)) { "模块 id 非法：$id" }
             require(name.isNotBlank()) { "模块缺少 name。" }
@@ -71,8 +88,12 @@ data class ModuleManifest(
             require("card/main.js" in entryNames) { "模块缺少 card/main.js。" }
             val hasWebui = entryNames.any { it.startsWith("webroot/") }
             require(!hasWebui || "webroot/index.html" in entryNames) { "模块 webroot/ 缺少 index.html。" }
+            if (backgroundIntervalMinutes != null) {
+                require(backgroundIntervalMinutes >= 1) { "模块 background.intervalMinutes 必须不小于 1。" }
+                require("background/main.js" in entryNames) { "模块声明了 background 但缺少 background/main.js。" }
+            }
             return ModuleManifest(id, name, version, versionCode, apiVersion,
-                description, author, capabilities, hasWebui)
+                description, author, capabilities, hasWebui, backgroundIntervalMinutes)
         }
     }
 }

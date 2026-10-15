@@ -2,12 +2,14 @@ package dev.finall.rearcardbridge.module
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ModuleManifestTest {
     private val cardEntries = setOf("module.json", "card/index.html", "card/main.js")
+    private val backgroundEntries = cardEntries + "background/main.js"
 
     private fun validate(
         id: String = "dev.example.weather",
@@ -17,7 +19,9 @@ class ModuleManifestTest {
         apiVersion: Int = 2,
         capabilities: Set<String> = emptySet(),
         entries: Set<String> = cardEntries,
-    ) = ModuleManifest.validate(id, name, version, versionCode, apiVersion, "", "", capabilities, entries)
+        backgroundIntervalMinutes: Int? = null,
+    ) = ModuleManifest.validate(id, name, version, versionCode, apiVersion, "", "",
+        capabilities, entries, backgroundIntervalMinutes)
 
     @Test
     fun `valid manifest passes`() {
@@ -34,6 +38,39 @@ class ModuleManifestTest {
         }
         val manifest = validate(entries = cardEntries + "webroot/index.html")
         assertTrue(manifest.hasWebui)
+    }
+
+    @Test
+    fun `background is opt-in and defaults to null`() {
+        assertNull(validate().backgroundIntervalMinutes)
+        // background/main.js without the module.json declaration does not opt in.
+        assertNull(validate(entries = backgroundEntries).backgroundIntervalMinutes)
+    }
+
+    @Test
+    fun `valid background interval passes`() {
+        val manifest = validate(
+            entries = backgroundEntries,
+            backgroundIntervalMinutes = 15,
+        )
+        assertEquals(15, manifest.backgroundIntervalMinutes)
+    }
+
+    @Test
+    fun `background requires background main js`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            validate(backgroundIntervalMinutes = 15)
+        }
+    }
+
+    @Test
+    fun `background interval below one is rejected`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            validate(entries = backgroundEntries, backgroundIntervalMinutes = 0)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            validate(entries = backgroundEntries, backgroundIntervalMinutes = -5)
+        }
     }
 
     @Test

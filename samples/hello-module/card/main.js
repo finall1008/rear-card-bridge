@@ -38,6 +38,7 @@
       var count = await bridge.storage.get('count');
       state.count = typeof count === 'number' ? count : 0;
       requestDraw();
+      bridge.card.saveSnapshot({ label: state.label, count: state.count });
     } catch (error) {
       state.label = '读取失败';
       bridge.log.error('加载失败: ' + error);
@@ -45,6 +46,12 @@
     }
   }
 
+  // 息屏常显只给最初一两帧：先同步画出前台或后台保存的同一份快照。
+  var snapshot = bridge.card.readSnapshot();
+  if (snapshot && typeof snapshot.label === 'string' && typeof snapshot.count === 'number') {
+    state = snapshot;
+    draw();
+  }
   bridge.config.onChange(load);
   bridge.card.onRefresh(load);
   load();

@@ -12,6 +12,8 @@ weather.zip
 │   ├── index.html
 │   ├── main.js
 │   └── assets/        # 可选：包内图片等静态资源
+├── background/        # 可选：桥内后台刷新
+│   └── main.js        # 提供 async function refresh()
 └── webroot/           # 可选：设置网页；存在时必须有 index.html
     ├── index.html     # 第一个脚本必须引入 <script src="bridge-shim.js"></script>
     └── ...
@@ -30,7 +32,8 @@ weather.zip
   "apiVersion": 2,
   "description": "显示指定城市的天气",
   "author": "Example",
-  "capabilities": ["network", "storage", "files"]
+  "capabilities": ["network", "storage", "files"],
+  "background": { "intervalMinutes": 15 }
 }
 ```
 
@@ -40,12 +43,13 @@ weather.zip
 | versionCode | 整数，**更新安装时必须大于已安装版本**，否则拒绝 |
 | apiVersion | 固定为 2 |
 | capabilities | 只允许 `network` / `storage` / `files`；声明后对应的 API 才可用 |
+| background | 可选；`intervalMinutes` 为 ≥ 1 的整数，并且必须提供 `background/main.js`。未声明的模块不参与后台刷新 |
 
 `config` 操作（`bridge.config.*`）与日志不需要能力声明。
 
 ## 2. 基础 API
 
-卡片（QuickJS）和设置页（WebView）共用 `bridge.config`、`bridge.storage`、`bridge.files` 和卡片联动操作，数据共享。桥接读写方法返回 Promise；失败时 reject 一个带 `code` 的 Error。**`bridge.net` 仅在背屏卡片中提供；设置页直接使用 WebView 的 `fetch` / `XMLHttpRequest`，不经过原生网络后端。**
+卡片（QuickJS）和设置页（WebView）共用 `bridge.config`、`bridge.storage`、`bridge.files` 和卡片联动操作，数据共享。桥接读写方法返回 Promise；失败时 reject 一个带 `code` 的 Error。**`bridge.net` 在背屏卡片和后台刷新入口中提供；设置页直接使用 WebView 的 `fetch` / `XMLHttpRequest`，不经过原生网络后端。**
 
 设置页注意：在 `webroot/index.html` 里**第一个**引入桥接脚本：
 
@@ -156,10 +160,37 @@ if (snapshot) render(snapshot);
 bridge.card.saveSnapshot({ profile, images });
 ```
 
-- 两个方法都是**同步**的，存储在载体的 `localStorage` 里，运行环境重建后仍然保留；仅背屏卡片提供。
-- 值必须能被 JSON 序列化。内容和已存快照相同时不会重复写入。
+- 卡片端仍可**同步**读取和更新本地快照：`readSnapshot()` 读取本地缓存，`saveSnapshot()` 立即更新缓存，同时异步把同一份快照提交给桥；内容变化时可 await 返回的 Promise 等待桥保存完成。桥保存的是前台和后台共用的快照，不是另一份业务存储。
+- 背屏读取脚本的同一次载体数据查询会带回最新快照；运行时在执行模块脚本之前同步更新 `localStorage`，首帧无需等待额外的 JS 桥接请求。后台保存的新快照会在宿主下次实际读取载体数据时生效，不主动唤醒背屏。
+- 值必须能被 JSON 序列化，桥端单份快照限 256K 字符；图片请缩放后再转 Data URL。内容和已存快照相同时不会重复写入。
 - Data URL 图片可以放进快照，同步阶段设置的图片在常显中能正常显示；体积尽量按显示尺寸控制。
 - 快照格式由模块自己决定，脚本更新后可能读到旧格式，使用前自行校验。
+- 已有载体需要更新载体资源，并到系统背屏设置移除旧卡、重新应用一次，才能使用共享快照链路。
+
+### 后台刷新入口
+
+在模块描述中声明 `"background": { "intervalMinutes": 15 }`，并提供 `background/main.js`：
+
+```js
+// 后台只取数并保存与 card/main.js 相同格式的快照，不进行背屏绘制。
+async function refresh() {
+  const city = await bridge.config.get("city") || "深圳";
+  const response = await bridge.net.request({
+    url: "https://example.com/weather?city=" + encodeURIComponent(city)
+  });
+  if (response.status !== 200) throw new Error("天气请求失败：" + response.status);
+  const weather = JSON.parse(response.body);
+  await bridge.card.saveSnapshot({ city, weather, updatedAt: Date.now() });
+}
+```
+
+- 用户在桥的「设置与关于」主动开启后台刷新，统一前台服务挂常驻通知；所有声明后台入口的模块共用该服务。首次立即执行，之后按每次完成后的间隔运行。应用和通知都可停止服务；没有后台模块时自动停止。
+- 每次任务创建独立 WebView JS 环境，加载入口后调用 `refresh()`，完成后销毁；周期由 Kotlin 调度，不依赖页面的 `setInterval`。不要把卡片的 Canvas 绘制脚本直接当成后台入口。可以在模块自己的构建流程中复用取数和快照生成代码，输出自包含入口。
+- 后台提供 `bridge.module`、`config.get/set`、`storage`、`files`、`net.request`、`log` 和 `card` 的快照读写/刷新请求。能力声明与卡片端相同。后台 `readSnapshot()` 同步读取任务开始时的快照；**后台 `saveSnapshot()` 返回 Promise，必须 await**，成功返回后快照已写入桥。
+- `refresh()` 必须等待本次所有异步工作完成，不要启动不等待的任务。单次执行最多 60 秒；失败不会清除已保存的快照，并记录日志，不立即重试请求，等待下一周期。
+- 任务串行运行，不会堆积同一模块的并发刷新。模块更新、卸载会在后续调度中重新读取；正在执行的任务使用本次加载的脚本。
+- 它更新的是快照，不保证背屏每个周期重绘。宿主休眠时卡片 JS 不运行，等宿主自行重载/查询时读取最新快照。系统省电可能延迟后台执行。
+- 服务类型是 `dataSync`：Android 15 对其后台运行在 24 小时内累计限 6 小时，到限停止，回到应用后可手动开启。进程被结束或手机重启后需手动开启，不自动绕过系统限制重启。
 
 ### 日志
 
@@ -194,7 +225,7 @@ image.src = "data:image/png;base64," + res.bodyBase64;
 
 ## 5. 生命周期须知
 
-- 背屏休眠时卡片不运行。休眠期间**不会**定时执行 JS；卡片恢复显示时应检查数据时间戳决定是否重新拉取。
+- 背屏休眠时卡片不运行。休眠期间**不会**定时执行卡片 JS；桥的后台刷新入口可独立取数并保存快照，卡片恢复显示时同步读取最新快照。未提供后台入口的模块仍需在恢复显示时按时间戳决定是否重新拉取。
 - 卡片脚本热更新会重新执行脚本；进行中的异步请求会被取消（Promise 不再 resolve）。
 - 设置页销毁后不再向该页面回调；关闭页面不会撤销服务端已受理的请求。
 - 配置和业务数据保存在卡片桥中，卸载模块会一并删除。
@@ -221,8 +252,8 @@ node bin/card-build.js <模块源目录> <输出.zip>
 
 - 只有 `card/` 下的 `.js` 会交给 Babel 的 `@babel/plugin-transform-async-to-generator` 编译：输出是纯 JS（生成器 + 全局 Promise），不打包、不加 preset-env、不做 AST / 安全分析；语法错误会报出**出错文件**并使构建失败，失败时不写出 ZIP。
 - 源码保持原生 async/await；ZIP 里放的是编译后的纯 JS，运行时通过新运行时在执行模块脚本前注入的全局 `window.Promise` 执行（Babel 生成的 helper 直接使用该全局 Promise）。
-- `module.json`、`icon.png`、`card/` 非 JS 文件和 `webroot/**` 按**原始字节**打包；`webroot/` 是浏览器页面，保持原生 `Promise` / `fetch`，完全不编译。
-- 只收录 `module.json`、`icon.png`、`card/`、`webroot/` 这些模块根；源目录里的 `node_modules`、构建工具、仓库杂物不会进 ZIP。ZIP 的 CRC 由 ZIP 库管理，工具不计算任何自定义哈希或摘要。
+- `module.json`、`icon.png`、`card/` 非 JS 文件、`webroot/**` 和 `background/**` 按**原始字节**打包；`webroot/` 与 `background/` 运行在 WebView，保持原生 `async / await`，完全不编译。
+- 只收录 `module.json`、`icon.png`、`card/`、`webroot/`、`background/` 这些模块根；源目录里的 `node_modules`、构建工具、仓库杂物不会进 ZIP。ZIP 的 CRC 由 ZIP 库管理，工具不计算任何自定义哈希或摘要。
 - 旧运行时兼容：编译产物依赖新运行时注入的 Promise。已安装的**旧运行时**没有该注入，无法运行新产物——更新运行时后必须重新构建 ZIP 并**重新生成载体**（更新模块资源、到系统背屏设置重新应用）。
 - 构建工具只在 Node 环境下验证编译与打包；真机背屏运行与联网行为由应用侧另行验证。
 

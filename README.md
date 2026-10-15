@@ -28,13 +28,15 @@ module.zip
 │   ├── index.html
 │   ├── main.js
 │   └── assets/       # 可选
+├── background/       # 可选：桥内后台刷新
+│   └── main.js        # async function refresh()
 └── webroot/          # 可选：设置网页
     └── index.html
 ```
 
 同一模块由 `module.json` 的 `id` 标识，更新包的 `versionCode` 必须递增。更新保留配置和业务数据，卸载则删除这些数据。仓库安装支持 GitHub、GitLab、Gitee 的公开仓库归档；前端须预先构建为静态文件，手机上不执行安装脚本或构建脚本。
 
-背屏端运行 MAML / QuickJS / Canvas，不是 WebView；设置页运行在卡片桥的 WebView 中。两端共用 `bridge.config`、`bridge.storage`、`bridge.files` 等数据接口。设置页联网直接用 WebView 的 `fetch` / XMLHttpRequest；`bridge.net` 仅用于背屏卡片，详见开发指南。
+背屏端运行 MAML / QuickJS / Canvas，不是 WebView；设置页运行在卡片桥的 WebView 中。两端共用 `bridge.config`、`bridge.storage`、`bridge.files` 等数据接口。设置页联网直接用 WebView 的 `fetch` / XMLHttpRequest；`bridge.net` 用于背屏卡片和后台刷新入口，详见开发指南。
 
 ### 模块构建工具（tools/card-build）
 
@@ -48,7 +50,7 @@ node bin/card-build.js <模块源目录> <输出.zip>
 # node tools/card-build/bin/card-build.js <模块源目录> <输出.zip>
 ```
 
-工具只把 `card/` 下的 `.js` 交给 Babel `@babel/plugin-transform-async-to-generator`（不打包、不加 preset-env、不做 AST / 安全扫描）；语法错误报出出错文件并以非零状态退出。`module.json`、`icon.png`、`card/` 非 JS 与 `webroot/**` 按原始字节打包，只收录这些模块根，`node_modules` 与工具源码不会进包；ZIP 的 CRC 由库管理，不计算自定义哈希。运行时随载体写入：桥更新运行时后，须在模块详情更新载体并到系统重新应用。详见[模块开发指南](<docs/module-development.md>)的「发布与安装」。
+工具只把 `card/` 下的 `.js` 交给 Babel `@babel/plugin-transform-async-to-generator`（不打包、不加 preset-env、不做 AST / 安全扫描）；语法错误报出出错文件并以非零状态退出。`module.json`、`icon.png`、`card/` 非 JS、`webroot/**` 与 `background/**` 按原始字节打包，只收录这些模块根，`node_modules` 与工具源码不会进包；ZIP 的 CRC 由库管理，不计算自定义哈希。运行时随载体写入：桥更新运行时后，须在模块详情更新载体并到系统重新应用。详见[模块开发指南](<docs/module-development.md>)的「发布与安装」。
 
 ## 热更新和重新应用
 
@@ -57,7 +59,11 @@ node bin/card-build.js <模块源目录> <输出.zip>
 - 包内静态图片等资源变化：需更新载体，然后在系统中移除旧卡并重新应用。
 - 写入完成、打开设置和用户确认，都不代表应用检测到了系统已应用状态。
 
-休眠期间卡片 JS 不保证运行；重新显示时再获取最新状态。Shizuku 只用于扫描、写入和恢复本地载体，不参与日常模块 API 请求。
+休眠期间卡片 JS 不保证运行。模块可以声明 `background: { "intervalMinutes": 15 }` 并提供后台入口，在「设置与关于」开启统一后台刷新后，由桥执行取数和 `bridge.card.saveSnapshot()`；背屏重载时 `readSnapshot()` 同步读取前台或后台保存的同一份最新快照。它不唤醒背屏，也不保证屏幕按刷新周期重绘。使用本功能前，已有载体须更新并在系统中重新应用一次。
+
+后台刷新使用有常驻通知的 `dataSync` 前台服务，可在应用或通知中停止；需通知权限，系统省电仍可能延迟执行。Android 15 对该类型的后台运行在 24 小时内累计限 6 小时，到限自动停止；回到应用后可手动开启，不自动绕过时限重启。进程被系统结束或重启手机后也需手动开启。详见[后台刷新入口](<docs/module-development.md#后台刷新入口>)。
+
+Shizuku 只用于扫描、写入和恢复本地载体，不参与日常模块 API 或后台刷新。
 
 不计算内容哈希或摘要，不做脚本 AST、安全扫描、危险 API 扫描或执行验证。仅检查包格式、路径和 HTML / XML 结构。请只安装你信任的模块。
 
@@ -131,7 +137,7 @@ try {
 WebUI 的异步数据回调、并发请求与浏览器网络 API 边界另有无依赖 Node.js 回归测试：
 
 ```sh
-node --test app/src/test/js/bridge-shim.test.cjs
+node --test app/src/test/js/*.test.cjs
 ```
 
 模块构建工具（编译 card 脚本、webroot 字节不变、ZIP 形状与错误报告）的 Node 内置测试：

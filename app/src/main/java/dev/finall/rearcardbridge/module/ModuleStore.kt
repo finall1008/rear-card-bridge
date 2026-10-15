@@ -15,10 +15,25 @@ data class InstalledModule(
 )
 
 /**
+ * A stored card display snapshot written by card.saveSnapshot (foreground card or
+ * background refresh) — one shared copy for both sides.
+ * [value] is an org.json value (JSONObject, JSONArray, String, Number, Boolean or
+ * [JSONObject.NULL]); [text] is the same JSON text the card-side localStorage entry
+ * would hold for it, so a background runner can inject it verbatim.
+ */
+data class ModuleSnapshot(val rev: Long, val value: Any) {
+    val text: String
+        get() = when (value) {
+            is String -> JSONObject.quote(value)
+            else -> value.toString()
+        }
+}
+
+/**
  * Module registry. Each module owns filesDir/modules/<id>/package (the extracted zip,
  * replaced on update) and filesDir/modules/<id>/data (preserved across updates: config.json,
- * storage.json, state.json and a files/ directory the module can freely use through the
- * bridge files API).
+ * storage.json, state.json, snapshot.json and a files/ directory the module can freely use
+ * through the bridge files API).
  */
 class ModuleStore(context: Context) {
     private val root = File(context.filesDir, "modules")
@@ -127,6 +142,40 @@ class ModuleStore(context: Context) {
 
     fun readStorage(id: String): JSONObject = readJson(File(dataDir(id), "storage.json"))
     fun writeStorage(id: String, storage: JSONObject) = writeJson(File(dataDir(id), "storage.json"), storage)
+
+    /**
+     * The shared card display snapshot as localStorage-compatible JSON text
+     * (null when the module never saved one). Same bytes the carrier's
+     * readSnapshot parses, so a background runner can inject the text verbatim.
+     */
+    fun readSnapshot(id: String): String? = readSnapshotRecord(id)?.text
+
+    /**
+     * Full snapshot record: revision plus the org.json value. Stored as one atomic
+     * file so revision and value never tear; the revision rides the live payload so a
+     * running card refreshes its copy without re-running its script.
+     */
+    fun readSnapshotRecord(id: String): ModuleSnapshot? {
+        val file = File(File(root, id), "data/snapshot.json")
+        val json = readJson(file)
+        if (!json.has("value")) return null
+        return ModuleSnapshot(json.optLong("rev", 0L), json.opt("value") ?: JSONObject.NULL)
+    }
+
+    /**
+     * Atomically stores a snapshot (any JSON value; null clears the value but keeps
+     * the record) and returns the new revision. Only called from an explicit
+     * card.saveSnapshot — nothing uploads cached card state on its own.
+     */
+    fun writeSnapshot(id: String, value: Any?): Long {
+        val previous = readSnapshotRecord(id)
+        val text = ModuleSnapshot(0L, value ?: JSONObject.NULL).text
+        if (previous?.text == text) return previous.rev
+        val rev = (previous?.rev ?: 0L) + 1
+        writeJson(File(dataDir(id), "snapshot.json"),
+            JSONObject().put("rev", rev).put("value", value ?: JSONObject.NULL))
+        return rev
+    }
 
     fun readState(id: String): JSONObject =
         readJson(File(dataDir(id), "state.json")).let { state ->

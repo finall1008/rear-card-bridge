@@ -49,6 +49,7 @@ fun BridgeScreen(
     onSelectModule: (String) -> Unit,
     onUninstallModule: (String) -> Unit,
     onUpdateModule: (String) -> Unit,
+    onToggleBackgroundRefresh: () -> Unit,
 ) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     val nav = rememberNavController<BridgeRoute>(BridgeRoute.Root)
@@ -102,7 +103,7 @@ fun BridgeScreen(
                     },
                 ) { padding ->
                     Box(Modifier.fillMaxSize().padding(padding)) {
-                        if (tab == 1) SettingsPage(state, onAuthorize, onRefresh)
+                        if (tab == 1) SettingsPage(state, onAuthorize, onRefresh, onToggleBackgroundRefresh)
                         else ModuleListPage(state, onInstallModuleZip,
                             onInstallGit = { showGit = true }, onOpenModule = { id ->
                                 nav.push(BridgeRoute.ModuleDetail(id))
@@ -264,6 +265,9 @@ private fun ModuleDetailPage(state: BridgeUiState, module: ModuleInfo,
                 BasicComponent(title = "使用能力", summary = module.capabilities.joinToString("、") {
                     when (it) { "network" -> "联网"; "storage" -> "存储"; "files" -> "文件"; else -> it }
                 }.ifBlank { "无额外能力" })
+                BasicComponent(title = "后台刷新", summary = module.backgroundIntervalMinutes?.let {
+                    "每 $it 分钟更新快照；在「设置与关于」统一开启"
+                } ?: "模块未提供后台刷新入口")
             }
         }
         item {
@@ -354,7 +358,8 @@ private fun TargetPickerPage(state: BridgeUiState, ready: Boolean,
 }
 
 @Composable
-private fun SettingsPage(state: BridgeUiState, onAuthorize: () -> Unit, onRefresh: () -> Unit) {
+private fun SettingsPage(state: BridgeUiState, onAuthorize: () -> Unit, onRefresh: () -> Unit,
+    onToggleBackgroundRefresh: () -> Unit) {
     val context = LocalContext.current
     val ready = state.shizuku.status == ShizukuStatus.READY
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp),
@@ -372,6 +377,15 @@ private fun SettingsPage(state: BridgeUiState, onAuthorize: () -> Unit, onRefres
                     summary = if (ready) "重新扫描预设及自行生成的本地卡片" else "只有写入和恢复载体需要 Shizuku",
                     endActions = { ForwardIcon() }, onClick = if (ready) onRefresh else onAuthorize,
                     enabled = !state.busy)
+            }
+        }
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                BasicComponent(title = "后台刷新", summary = state.backgroundRefreshMessage)
+                BasicComponent(title = if (state.backgroundRefreshRunning) "停止后台刷新" else "开启后台刷新",
+                    summary = "${state.modules.count { it.backgroundIntervalMinutes != null }} 个模块提供后台入口；按各自周期更新快照，不唤醒背屏。",
+                    endActions = { ForwardIcon() }, onClick = onToggleBackgroundRefresh)
+                BasicComponent(title = "系统限制", summary = "需允许通知。省电模式可能延迟执行；Android 15 后台同步在 24 小时内累计限 6 小时，到限停止，回到应用后可手动开启。")
             }
         }
         item {

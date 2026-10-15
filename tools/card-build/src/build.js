@@ -5,7 +5,7 @@ import { compileScript } from './compile.js';
 
 /** 模块包允许收录的根条目：与 ModuleManifest/ModuleStore 的包结构一致。 */
 const ROOT_FILES = ['module.json', 'icon.png'];
-const ROOT_DIRS = ['card', 'webroot'];
+const ROOT_DIRS = ['card', 'webroot', 'background'];
 
 /** 构建期结构/IO 错误。 */
 export class BuildError extends Error {
@@ -51,7 +51,7 @@ function walkFiles(dir, relBase, out) {
 }
 
 /**
- * 列出会被打进 ZIP 的文件：module.json、icon.png、card/**、webroot/**。
+ * 列出会被打进 ZIP 的文件：module.json、icon.png、card/**、webroot/**、background/**。
  * 其余内容（node_modules、package.json、.git、dist、工具源码等）不会被收录。
  *
  * @param {string} sourceDir 模块源目录（根目录直接是 module.json）
@@ -83,7 +83,7 @@ export function collectModuleEntries(sourceDir) {
  * - card 下的全部 .js（含子目录）：原生 async/await 经 Babel 编译为生成器纯 JS（编译错误报文件并失败，
  *   失败时不写出产物）。
  * - 其余文件（module.json、icon.png、card 非 JS、webroot/**）按原始字节打包；
- *   webroot/ 是浏览器环境，保持原生 Promise/fetch，完全不编译。
+ *   webroot/ 和 background/ 在 WebView 中运行，保持原生 async/await，完全不编译。
  * - ZIP 由 fflate 生成，CRC 由库管理；不计算任何自定义哈希/摘要。
  *
  * @param {{sourceDir: string, outPath: string}} options
