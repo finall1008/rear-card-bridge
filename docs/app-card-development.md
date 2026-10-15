@@ -171,7 +171,7 @@ ai-token 使用移动超过 12 个逻辑单位就不算点击、横滑至少 60 
 ## 5. 尺寸、布局与 Canvas 状态
 
 - 当前载体使用 `screenWidth="912"`，JsCanvas 的宽高来自宿主 `view_width` / `view_height`。脚本可参考 `window.CANVAS_W`、`window.CANVAS_H`，不要把 HTML 的 width / height 当成能配置原生画布的入口。
-- 912 × 596 是 ai-token 的布局基准 / 回退值，不是所有卡片都固定的实际尺寸。本仓库早期静态示例还使用过 912 × 412。
+- 912 × 596 是 ai-token 的布局基准 / 回退值，不是所有卡片都固定的实际尺寸。
 - 镜头区域会遮挡左侧。ai-token 把内容放在约 x=336 到 x=876 的右侧区域；这是该设备上的布局经验，不是通用安全区。
 - 首先确认目标设备的画布尺寸、可视区域和指针坐标，再统一布局与命中检测。若缩放设计坐标，输入坐标也做对应逆变换。
 - 每次重绘完整背景和当前界面，避免依赖上一帧残留像素。清屏和背景绘制都在 RAF 中完成。
@@ -277,4 +277,3 @@ image.src = 'assets/logo.png';
 - [动态脚本加载、RAF 调度及旧会话清理](<../app/src/main/java/dev/finall/rearcardbridge/packageio/LiveCarrierRuntime.kt>)。
 - [桥接 API 2、保存状态与静态资源更新流程](<../README.md>)。
 - 邻接 ai-token 项目的 [卡片实现](<../../xiaomi-backscreen-ai-token/app/src/main/assets/card/main.js>)：图片加载回调（126–129 行）、合并重绘（476–487 行）、滑动与指针处理（509–615 行）。此相对链接依赖两个项目同级检出。
-- [早期静态绘制示例](<../samples/rear-visible/main.js>) 只展示画面与可视区域，不是交互和异步重绘模板；开发交互卡请使用本指南的 RAF 结构。

@@ -48,7 +48,7 @@ node bin/card-build.js <模块源目录> <输出.zip>
 # node tools/card-build/bin/card-build.js <模块源目录> <输出.zip>
 ```
 
-工具只把 `card/` 下的 `.js` 交给 Babel `@babel/plugin-transform-async-to-generator`（不打包、不加 preset-env、不做 AST / 安全扫描）；语法错误报出出错文件并以非零状态退出。`module.json`、`icon.png`、`card/` 非 JS 与 `webroot/**` 按原始字节打包，只收录这些模块根，`node_modules` 与工具源码不会进包；ZIP 的 CRC 由库管理，不计算自定义哈希。已安装的旧运行时无法执行新产物：更新运行时后须重新构建 ZIP 并重新生成载体。详见[模块开发指南](<docs/module-development.md>)的「发布与安装」。
+工具只把 `card/` 下的 `.js` 交给 Babel `@babel/plugin-transform-async-to-generator`（不打包、不加 preset-env、不做 AST / 安全扫描）；语法错误报出出错文件并以非零状态退出。`module.json`、`icon.png`、`card/` 非 JS 与 `webroot/**` 按原始字节打包，只收录这些模块根，`node_modules` 与工具源码不会进包；ZIP 的 CRC 由库管理，不计算自定义哈希。运行时随载体写入：桥更新运行时后，须在模块详情更新载体并到系统重新应用。详见[模块开发指南](<docs/module-development.md>)的「发布与安装」。
 
 ## 热更新和重新应用
 
