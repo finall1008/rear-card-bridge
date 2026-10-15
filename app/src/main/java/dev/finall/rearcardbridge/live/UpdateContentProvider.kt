@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.Binder
 import android.os.Bundle
 import android.os.UserManager
+import dev.finall.rearcardbridge.module.ModuleInstaller
 
 /** Synchronous IPC: no Activity, service, notification or Shizuku request is started here. */
 class UpdateContentProvider : ContentProvider() {
@@ -26,9 +27,6 @@ class UpdateContentProvider : ContentProvider() {
         val packages = context.packageManager.getPackagesForUid(uid).orEmpty()
         if (packages.size != 1 || packages.single() != source)
             return failure("CALLER_UNKNOWN", "无法唯一确认调用者包名。")
-        val key = extras.getString("key") ?: source
-        if (key.isBlank()) return failure("INVALID_INPUT", "key 不能为空。")
-        result.putString("key", key)
         val uri = extras.getParcelable("package_uri", Uri::class.java)
             ?: return failure("INVALID_INPUT", "缺少 package_uri。")
         if (uri.scheme != "content") return failure("INVALID_INPUT", "仅接受 content:// ZIP 文件。")
@@ -36,15 +34,30 @@ class UpdateContentProvider : ContentProvider() {
         val token = Binder.clearCallingIdentity()
         try {
             return synchronized(ContentOperations.lock) {
+                // Since modules arrived, external apps ship the same module zip format
+                // (module.json + card/ + optional webroot/) and go through module install.
+                val file = java.io.File.createTempFile("incoming-", ".zip", context.cacheDir)
+                val (installed, saved) = try {
+                    requireNotNull(context.contentResolver.openInputStream(uri)) {
+                        "无法读取 ZIP 文件。"
+                    }.use { input -> file.outputStream().use { input.copyTo(it) } }
+                    ModuleInstaller(context).install(file, source)
+                } finally { file.delete() }
                 val store = LiveContentStore(context)
-                val group = store.group(source, key)
-                if (group?.cardId == null) return@synchronized failure("BINDING_REQUIRED", "请先通过前台入口选择并绑定目标。")
+                val group = store.group(context.packageName, installed.manifest.id)
+                if (group?.cardId == null) {
+                    return@synchronized failure("BINDING_REQUIRED", "模块已安装；请通过前台入口选择并绑定目标。")
+                        .apply {
+                            putString("key", installed.manifest.id)
+                            putLong("revision", saved.revision)
+                        }
+                }
+                result.putString("key", installed.manifest.id)
                 result.putString("card_id", group.cardId)
-                val saved = PackageImporter(context).import(uri, group.id)
                 val resources = store.resourceStatus(group.id)
                 result.apply {
                     putString("status", "SAVED")
-                    putString("message", "内容已保存；背屏读取时间由系统载体决定。${resources.message}")
+                    putString("message", "模块已更新；背屏读取时间由系统载体决定。${resources.message}")
                     putLong("revision", saved.revision)
                     putString("carrier_resource_status", resources.state.name)
                     if (resources.state != CarrierResourceState.UNKNOWN) {

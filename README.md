@@ -1,157 +1,119 @@
-# 背屏卡片桥 · 动态更新
+# 背屏卡片桥
 
-Android / Kotlin 应用，包名 `dev.finall.rearcardbridge`，界面使用 Miuix Compose 0.9.4。
+Android / Kotlin，界面使用 Miuix Compose 0.9.4。一个模块 ZIP 包含背屏卡片资源和可选的设置网页；卡片通过统一 `bridge` API 联网、读写自己的数据，不再需要每张卡片配一个 Android App。
 
-开发自己的应用卡请先阅读 [应用卡开发指南](<docs/app-card-development.md>)：JsCanvas 与网页的差异、RAF 绘制时机、触摸手势、资源加载、热更新与排错。
+- [模块格式与基础 API](<docs/module-development.md>)
+- [Canvas 绘制、触摸与生命周期](<docs/app-card-development.md>)
+- [示例模块](<samples/hello-module/>)
 
-## 首次设置
+## 使用流程
 
-1. 启动 Shizuku（ADB / shell 模式），在「配置载体」中授权。
-2. 从实际扫描出的本地资源选择一张原生卡片。
-3. 点击「安装并绑定动态载体」。应用备份原资源，写入固定载体包。
-4. 应用打开「背屏设置」。进入「智能应用 → 我生成的」，移除旧卡后重新应用所选卡片一次。
-5. 导入内容。载体读取桥接应用提供的脚本并在背屏绘制。
+1. 在「设置与关于」启动/连接 Shizuku 并授权。
+2. 在「主页」导入模块 ZIP，或从公开 Git 仓库安装。
+3. 安装后选择实际扫描出的本地卡片作为替换目标。
+4. 确认写入：应用先备份目标原始资源，再写入模块载体。
+5. 到系统背屏设置移除旧卡，再从该卡片的原入口重新应用。
 
-资源列表用于首次选择载体，不是原生「我生成的」列表。不能从外部直接登记新卡片或自动点击系统的应用按钮。
+预设卡片和自行生成的卡片均可作为目标，前提是对应资源已经下载到本机且可写；不会注册新系统卡片，也不会模拟点击应用按钮。更换目标前须恢复原始资源，解除原绑定。
 
-## 日常更新
+主页只有模块安装和模块列表。点击模块可打开其设置网页、查看载体状态、更新资源或卸载；Shizuku 状态、作者和仓库信息统一放在「设置与关于」。
 
-「选择 ZIP 导入」读取整个 ZIP，将合并后的脚本、内容名称、版本号和原 ZIP 保存到本应用私有目录。按来源 App 和 key 分组，每组保留自己的当前内容、独立版本和目标卡片。
-
-外部未传 key 时使用来源 App 包名；内部以 `(来源包名, key)` 区分分组。同一张目标卡片只能被一个分组占用。首次遇到一组内容时，先暂存内容，再由用户选择目标、安装载体并在系统里重新应用一次。更换目标前先恢复原载体；已知组日常更新不再选卡。界面的分组列表用于切换、导入、重装载体和恢复。
-
-仅支持按来源 App / key 的分组载体，不迁移原有单组内容或绑定。原有单组载体需要重新导入内容、选择目标并安装。
-
-已应用的固定载体通过只读 `ContentProvider` 查询最新脚本，经 MAML `HostVar` 传给 `JsCanvas`，在运行时执行。更新不会替换系统资源、移除卡片或跳转系统页面，也不需要 Shizuku。
-
-重新打开卡片会再次读取持久化的最新内容。背屏休眠时，更新会延后到点亮后载入。界面的「已保存版本」表示本应用保存完成，不表示已经在背屏执行。
-
-载体在执行新版本前取消旧脚本的动画、计时器和通过原生事件接口注册的监听，然后执行新脚本。运行时仍是 MAML / QuickJS / Canvas，不是 WebView。
-
-## 输入包与资源边界
+## 模块包
 
 ```text
-index.html
-main.js
-assets/       # 可选
+module.zip
+├── module.json
+├── icon.png          # 可选
+├── card/
+│   ├── index.html
+│   ├── main.js
+│   └── assets/       # 可选
+└── webroot/          # 可选：设置网页
+    └── index.html
 ```
 
-HTML 必须包含 `canvas`。支持本地 `.js` 经典脚本和内联经典脚本，按文档顺序合并。没有引用的 `main.js` 会追加到末尾。不支持 ES Module 或远程脚本引用。
+同一模块由 `module.json` 的 `id` 标识，更新包的 `versionCode` 必须递增。更新保留配置和业务数据，卸载则删除这些数据。仓库安装支持 GitHub、GitLab、Gitee 的公开仓库归档；前端须预先构建为静态文件，手机上不执行安装脚本或构建脚本。
 
-首次写入载体时会复制当前 ZIP 的资源。动态更新更新脚本，不会刷新已应用载体包中的图片、字体等文件。每次导入后会把静态资源与该组上次成功写入载体的快照比较（路径与解压后的字节，不使用哈希）；入口 HTML 和参与合并的脚本不触发静态资源更新。仅脚本变化无需重新安装；静态资源新增、修改或删除时，页面显示变化数量和「更新载体资源」按钮。
+背屏端运行 MAML / QuickJS / Canvas，不是 WebView；设置页运行在卡片桥的 WebView 中。两端共用 `bridge.config`、`bridge.storage`、`bridge.files`、`bridge.net` 等接口，详见开发指南。
 
-更新载体后，需到「我生成的」移除旧卡并重新应用，再点击「我已移除旧卡并重新应用」记录自己的确认。写入和打开设置不代表已应用，应用不会自动检测系统是否完成应用。已有绑定如果没有安装快照，显示「尚无资源比对记录」；再次成功安装后建立快照。恢复原始资源会清除该绑定的快照和重新应用提示。
+## 热更新和重新应用
 
-示例：[rear-visible.zip](samples/rear-visible.zip)。生成命令：
+- 脚本更新：经只读 Provider / HostVar 热更新，无需 Shizuku。
+- 配置、网络数据、Base64 Data URL 图片：走数据通道，无需重新应用。
+- 包内静态图片等资源变化：需更新载体，然后在系统中移除旧卡并重新应用。
+- 写入完成、打开设置和用户确认，都不代表应用检测到了系统已应用状态。
 
-```sh
-python3 samples/pack-rear-card.py
-```
+休眠期间卡片 JS 不保证运行；重新显示时再获取最新状态。Shizuku 只用于扫描、写入和恢复本地载体，不参与日常模块 API 请求。
 
-不计算自定义哈希或摘要，不做 JS AST、安全扫描、危险 API 黑名单或脚本执行检查。仅检查 ZIP、路径和 HTML / XML 格式。请使用你愿意在系统卡片环境中执行的脚本。
+不计算内容哈希或摘要，不做脚本 AST、安全扫描、危险 API 扫描或执行验证。仅检查包格式、路径和 HTML / XML 结构。请只安装你信任的模块。
 
-## 前台 Intent（API 2）
+## 外部 App 导入（API 2）
 
-调用方使用自己的 FileProvider 提供整个 ZIP，并授予读取权限。
+外部 App 和文件选择器使用同一安装流程，**也必须提供上述模块格式 ZIP**。不再有外部内容分组选择页，也不接受裸 `index.html + main.js` ZIP。模块身份以 `module.json.id` 为准。
+
+### 前台入口
+
+调用方通过自己的 FileProvider 提供 ZIP，授予读取权限：
 
 ```kotlin
 val intent = Intent("dev.finall.rearcardbridge.action.UPDATE_CONTENT").apply {
     setPackage("dev.finall.rearcardbridge")
     setDataAndType(packageUri, "application/zip")
     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    clipData = ClipData.newRawUri("card package", packageUri)
+    clipData = ClipData.newRawUri("module package", packageUri)
     putExtra("api_version", 2)
     putExtra("request_id", requestId)
-    putExtra("key", "weather") // 可省略，默认来源 App 包名
 }
 launcher.launch(intent)
 ```
 
-也支持 `ACTION_SEND` 的 `EXTRA_STREAM` ZIP 分享。自定义更新入口要求 `api_version=2`，不提供旧 action 别名。
+也支持 `ACTION_SEND` 的 `EXTRA_STREAM` ZIP。返回 `request_id`、`status`、`message`、`card_id`、`key`（模块 ID）、`revision`。`BINDING_REQUIRED` 表示模块已保存但尚未选择目标；`SAVED` 表示内容保存完成，不表示背屏已执行；不返回 `APPLIED`。
 
-正式集成请使用 Activity Result（`launcher.launch` / `startActivityForResult`），系统提供的 `callingPackage` 用于确定来源；不使用调用方填写的包名、referrer 或 URI authority。普通 `ACTION_SEND` 或无法确认调用者的启动方式，需要用户在分组列表明确选择已有分组，才会导入，不猜测来源。强制复用已有 Activity 的新 Intent 同样按无法确认来源处理。
+### 后台入口
 
-Activity 返回 `request_id`、`status`、`message`、`card_id`、`key`、`revision`。已绑定组导入返回 `SAVED`；未绑定组暂存返回 `BINDING_REQUIRED`；首次写入载体返回 `CARRIER_WRITTEN`；手动打开设置返回 `SETTINGS_OPENED`。不返回 `APPLIED`。调用方在桥接 Activity 退出时取得最后一次操作结果。
-
-## 后台更新（API 2）
-
-后台入口是独立的 `ContentProvider.call()`，不调用 Activity、前台服务、通知或 Shizuku；没有绑定时只返回错误，不自动弹出配置页面。调用方应在自己的 IO 线程同步调用，并在调用期间保持 ZIP 可读。
+后台调用不会启动 Activity 或替换载体。请在 IO 线程调用，并显式授予 URI 权限：
 
 ```kotlin
-// 在调用方的后台/IO线程中执行；后台调用不会自动传递 URI 授权。
 val bridgePackage = "dev.finall.rearcardbridge"
 context.grantUriPermission(bridgePackage, packageUri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
 try {
     val result = context.contentResolver.call(
-        Uri.parse("content://dev.finall.rearcardbridge.update"),
-        "update_content", null,
+        Uri.parse("content://$bridgePackage.update"), "update_content", null,
         Bundle().apply {
             putInt("api_version", 2)
             putParcelable("package_uri", packageUri)
             putString("request_id", requestId)
-            putString("key", "weather") // 与前台首次绑定一致；可省略
-        },
+        }
     )
-    // status=SAVED 表示保存完成，不表示背屏已执行。
 } finally {
     context.revokeUriPermission(bridgePackage, packageUri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
 }
 ```
 
-调用方如果启用了包可见性过滤，可在自己的 manifest 中加入：
+调用身份由 Binder 确定；不支持共享 UID 的模糊来源。无绑定时仍安装模块并返回 `BINDING_REQUIRED`，由用户随后打开桥接 App 选择替换目标。常见错误为 `USER_LOCKED`、`URI_PERMISSION_DENIED`、`INVALID_INPUT`、`ERROR`。
 
-```xml
-<queries>
-    <provider android:authorities="dev.finall.rearcardbridge.update" />
-</queries>
-```
+已绑定模块更新还返回 `carrier_resource_status`（`UNKNOWN`、`CURRENT`、`UPDATE_REQUIRED`、`REAPPLY_REQUIRED`），以及已知时的静态资源变化数量。后台不会代替用户重新应用。
 
-Binder 调用身份确定来源包名；无法唯一确定来源（含共享 UID）返回 `CALLER_UNKNOWN`。返回字段包括 `request_id`、`status`、`message`，来源解析后包括 `key`，找到绑定后包括 `card_id`，保存成功包括 `revision`。
+## 独立 Debug 版
 
-- `SAVED`：该组内容保存完成。
-- `BINDING_REQUIRED`：来源 / key 尚未绑定或已恢复取消绑定；需用户主动走前台配置。
-- `USER_LOCKED`：用户存储不可用时的保护性返回。重启后首次解锁前，系统也可能直接拒绝启动 Provider，调用方需处理接口不可用异常。
-- `URI_PERMISSION_DENIED`：未授予桥接 App ZIP 读取权限。
-- `INVALID_INPUT` / `ERROR`：协议、ZIP 或存储操作失败。
+- Release：`dev.finall.rearcardbridge`
+- Debug：`dev.finall.rearcardbridge.debug`，名称「背屏卡片桥 Debug」
 
-设备本次开机解锁过后，重新锁屏无需解锁即可调用；不点亮屏幕、不拉起桥接界面。背屏休眠时仍可能延后到点亮才读取。调用方自身能否获得后台执行机会取决于 Android / 系统省电策略。此版本不支持首次解锁前的 Direct Boot 更新。
+两个版本的私有数据、Provider authority 和备份目录分开。外部 App 测试 Debug 时，目标包名和 Provider authority 都需换成 Debug 包名；Intent action 仍是同一协议名称。
 
-保存成功后还返回静态资源检测结果，不会在后台安装载体：
+**本机系统卡片资源是共享的**：请给 Debug 选择专用测试目标，不要覆盖 release 正在使用的卡片。两个版本不会互相识别对方的绑定。
 
-- `carrier_resource_status`：`UNKNOWN`（没有安装快照）、`CURRENT`（资源一致）、`UPDATE_REQUIRED`（静态资源变化）、`REAPPLY_REQUIRED`（已写入载体，等待用户确认重新应用）。
-- `carrier_update_required`：是否需要更新载体；`UNKNOWN` 时不返回此字段，不能把缺省值当成已确认无需更新。
-- `reapply_confirmation_pending`：是否正在提示用户确认重新应用，不代表检测到了系统应用状态。
-- `static_resources_added` / `static_resources_modified` / `static_resources_removed`：有安装快照时返回资源变化数量。
+## 备份与构建
 
-动态更新仍只刷新脚本。`UPDATE_REQUIRED` 时需在前台更新同一组载体，再到「我生成的」移除旧卡并手动重新应用。
+本地目标来自主题管理器已提取的 `.ai_app/<productId>_extracted/rearscreen` 资源。首次原始备份与前一版本保存在本版本应用对应的外部 files/backups 目录；恢复后仍需系统重新应用。
 
-## 持久化接口与备份
-
-```text
-content://dev.finall.rearcardbridge.live/bindings/<内部bindingId>/current
-columns: payload, revision, name
-payload: {"revision": 1, "script": "..."}
-```
-
-接口仅供读取，不提供外部写入能力。Xiaomi 的背屏进程通过它读取本应用保存的内容。
-
-首次配置沿用 Shizuku 资源扫描和备份：
-
-```text
-/storage/emulated/0/Android/data/com.android.thememanager/files/MIUI/.ai_app/<productId>_extracted/rearscreen
-/storage/emulated/0/Android/data/dev.finall.rearcardbridge/files/backups/
-```
-
-备份保留首次原始资源和前一版。恢复按钮只恢复原始资源文件，随后需要在系统页面重新应用原卡。
-
-## 构建与适配
-
-需要 JDK 17 或更新版本和 Android SDK 37，本机使用 JDK 21。
-
-Debug 和 Release 均使用仓库相对路径 `signing/release.jks` 内的签名，不使用默认 debug key。构建从 `signing/keychain.properties` 读取 `keyAlias`、`keychainService`、`keychainAccount`，再从 macOS 钥匙串读取密码。整个 `signing/` 目录被 Git 忽略，不提交密钥、本机配置或密码。构建前需自行准备这些本地文件；文件缺失或钥匙串不可访问会中止构建。安装使用 `adb install -r` 覆盖保留数据，不以卸载绕过签名冲突。
+构建需要 JDK 17+ 和 Android SDK 37：
 
 ```sh
-./gradlew :app:assembleDebug :app:assembleRelease :app:testDebugUnitTest
+./gradlew :app:assembleDebug :app:testDebugUnitTest
+./gradlew :app:assembleRelease
 ```
 
-资源路径、原生 HostVar 接口和公开背屏设置入口基于 Xiaomi 18 Pro / Android 17 的实测。其他机型和系统版本可能不同。
+Debug 和 Release 均使用本地 `signing/release.jks` 签名，别名和 Keychain 定位来自 `signing/keychain.properties`。密码只从 Keychain 读取，不输出或写入文件；缺少签名文件或无法读取 Keychain 时构建失败。整个 signing 目录不提交 Git。签名冲突不能通过自动卸载绕过。
+
+资源路径及 HostVar 行为依据当前实测 Xiaomi 设备，其他设备和系统版本需单独验证。

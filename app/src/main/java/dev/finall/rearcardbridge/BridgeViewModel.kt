@@ -5,12 +5,16 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.finall.rearcardbridge.live.ContentBinding
+import dev.finall.rearcardbridge.live.LiveContentContract
 import dev.finall.rearcardbridge.live.ContentOperations
 import dev.finall.rearcardbridge.live.LiveContentStore
-import dev.finall.rearcardbridge.live.PackageImporter
 import dev.finall.rearcardbridge.model.BridgeUiState
+import dev.finall.rearcardbridge.model.ModuleInfo
 import dev.finall.rearcardbridge.model.OperationResult
 import dev.finall.rearcardbridge.model.ShizukuStatus
+import dev.finall.rearcardbridge.module.GitInstall
+import dev.finall.rearcardbridge.module.ModuleInstaller
+import dev.finall.rearcardbridge.module.ModuleStore
 import dev.finall.rearcardbridge.packageio.CardPackageBuilder
 import dev.finall.rearcardbridge.shizuku.ShizukuCardClient
 import java.io.File
@@ -28,23 +32,18 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
     private val client = ShizukuCardClient(application)
     private val builder = CardPackageBuilder()
     private val contentStore = LiveContentStore(application)
-    private val importer = PackageImporter(application)
+    private val moduleStore = ModuleStore(application)
+    private val moduleInstaller = ModuleInstaller(application)
     private val mutableState = MutableStateFlow(BridgeUiState())
     val state = mutableState.asStateFlow()
     private val operationLock = Mutex()
-    private var pendingUri: Uri? = null
     var onOperationResult: ((OperationResult, String?) -> Unit)? = null
     var onOpenRearSettingsRequested: ((String?) -> OperationResult)? = null
+    var onOpenModuleSettings: ((String) -> Unit)? = null
 
     init {
         application.getExternalFilesDir(null)
-        runOperation(queue = true) {
-            val group = withContext(Dispatchers.IO) {
-                contentStore.bindings().firstOrNull()
-                    ?: contentStore.createGroup(application.packageName, application.packageName)
-            }
-            loadGroup(group)
-        }
+        runOperation(queue = true) { refreshModules() }
         viewModelScope.launch {
             client.state.collect { connection ->
                 val becameReady = connection.status == ShizukuStatus.READY &&
@@ -65,42 +64,8 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
     fun dismissError() { mutableState.update { it.copy(error = null) } }
     fun rejectInput(message: String) { mutableState.update { it.copy(error = message) } }
 
-    fun selectGroup(id: String) = runOperation {
-        val group = withContext(Dispatchers.IO) { contentStore.bindings().first { it.id == id } }
-        loadGroup(group)
-        pendingUri?.let { uri -> importPackage(uri, group); pendingUri = null }
-    }
-
-    fun receiveExternal(uri: Uri, source: String?, key: String?) = runOperation(queue = true) {
-        require(key == null || key.isNotBlank()) { "key 不能为空。" }
-        if (source == null) {
-            pendingUri = uri
-            mutableState.update { it.copy(status = "无法确认分享来源，请选择一个内容分组后导入。") }
-            return@runOperation
-        }
-        pendingUri = null
-        val group = withContext(Dispatchers.IO) { contentStore.createGroup(source, key ?: source) }
-        loadGroup(group)
-        importPackage(uri, group)
-    }
-
-    fun receivePackage(uri: Uri) = runOperation(queue = true) {
-        val group = withContext(Dispatchers.IO) {
-            contentStore.bindings().first { it.id == state.value.activeGroupId }
-        }
-        importPackage(uri, group)
-    }
-
-    private suspend fun importPackage(uri: Uri, group: ContentBinding) {
-        val saved = withContext(Dispatchers.IO) {
-            synchronized(ContentOperations.lock) { importer.import(uri, group.id) }
-        }
-        loadGroup(group)
-        recordResult(OperationResult(group.cardId != null,
-            if (group.cardId != null) "SAVED" else "BINDING_REQUIRED",
-            if (group.cardId != null) "${saved.name} · 已保存版本 ${saved.revision}。${state.value.carrierResources?.message.orEmpty()}"
-            else "内容已暂存，请为此来源 / key 选择目标并安装载体。"), group.cardId)
-    }
+    /** All incoming zips are module packages; the legacy per-source groups flow is gone. */
+    fun receiveExternal(uri: Uri) = installModuleZip(uri)
 
     private suspend fun loadGroup(group: ContentBinding) {
         val (groups, saved, resources) = withContext(Dispatchers.IO) {
@@ -115,15 +80,151 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
             selectedCardId = group.cardId, packageName = saved?.name,
             packageEntries = saved?.entries.orEmpty(), contentRevision = saved?.revision ?: 0,
             carrierResources = resources,
-            status = if (group.cardId == null) "请选择此分组的替换目标。" else "已绑定「${group.cardTitle}」") }
+            status = if (group.cardId == null) "请选择模块的替换目标。" else "已绑定「${group.cardTitle}」") }
     }
 
     fun refresh() = runOperation(queue = true) {
+        refreshModules()
         val cards = withContext(Dispatchers.IO) { client.listCards() }
         mutableState.update { old -> old.copy(cards = cards,
             selectedCardId = old.selectedCardId?.takeIf { id -> cards.any { it.id == id && it.canReplace } },
             status = "${cards.size} 个载体资源") }
         reloadActive()
+    }
+
+    /** Lists installed modules together with their content group / binding state. */
+    private suspend fun refreshModules() {
+        val (modules, groups) = withContext(Dispatchers.IO) {
+            synchronized(ContentOperations.lock) { moduleStore.list() to contentStore.bindings() }
+        }
+        val appPackage = getApplication<Application>().packageName
+        mutableState.update { it.copy(groups = groups, modules = modules.map { installed ->
+            val group = groups.firstOrNull { g -> g.sourcePackage == appPackage && g.key == installed.manifest.id }
+            val manifest = installed.manifest
+            ModuleInfo(id = manifest.id, name = manifest.name, version = manifest.version,
+                versionCode = manifest.versionCode, description = manifest.description,
+                author = manifest.author, capabilities = manifest.capabilities,
+                hasWebui = manifest.hasWebui, source = installed.source,
+                groupId = group?.id, boundCardId = group?.cardId, boundCardTitle = group?.cardTitle)
+        }) }
+    }
+
+    fun installModuleZip(uri: Uri) = runOperation(queue = true) {
+        val (installed, saved) = withContext(Dispatchers.IO) {
+            val file = File.createTempFile("module-import-", ".zip", getApplication<Application>().cacheDir)
+            try {
+                requireNotNull(getApplication<Application>().contentResolver.openInputStream(uri)) {
+                    "无法读取 ZIP 文件。"
+                }.use { source -> file.outputStream().use { source.copyTo(it) } }
+                moduleInstaller.install(file, source = "zip")
+            } finally { file.delete() }
+        }
+        finishModuleInstall(installed.manifest.id,
+            "模块「${installed.manifest.name}」已安装（版本 ${saved.revision}）。")
+    }
+
+    fun installModuleGit(url: String, branch: String?) = runOperation {
+        val (installed, saved) = installModuleGitOnce(url, branch)
+        finishModuleInstall(installed.manifest.id,
+            "模块「${installed.manifest.name}」已从仓库安装（版本 ${saved.revision}）。")
+    }
+
+    /** Re-downloads the recorded git source. Modules installed from ZIP have no update channel. */
+    fun updateModule(id: String) = runOperation {
+        val installed = withContext(Dispatchers.IO) { moduleStore.get(id) }
+            ?: error("模块尚未安装。")
+        val source = installed.source
+        require(source != null && source != "zip") { "ZIP 安装的模块请重新选择新版 ZIP。" }
+        val (url, branch) = source.split('@').let {
+            "https://" + it[0] to it.getOrNull(1)
+        }
+        installModuleGitOnce(url, branch)
+        refreshModules()
+        reloadActive()
+        mutableState.update { it.copy(status = "模块已更新。") }
+    }
+
+    private suspend fun installModuleGitOnce(url: String, branch: String?) = withContext(Dispatchers.IO) {
+        val repo = GitInstall.parseRepoUrl(url, branch)
+        val archive = File.createTempFile("module-git-", ".zip", getApplication<Application>().cacheDir)
+        val unpacked = File.createTempFile("module-git-", "", getApplication<Application>().cacheDir)
+        try {
+            check(unpacked.delete() && unpacked.mkdirs()) { "无法创建临时目录。" }
+            GitInstall.download(repo, archive)
+            GitInstall.stripTopLevel(archive, unpacked)
+            val repacked = File.createTempFile("module-git-repack-", ".zip", getApplication<Application>().cacheDir)
+            try {
+                repackDirectory(unpacked, repacked)
+                moduleInstaller.install(repacked, source = repo.display)
+            } finally { repacked.delete() }
+        } finally {
+            archive.delete()
+            unpacked.deleteRecursively()
+        }
+    }
+
+    /** stripTopLevel output is a plain directory; ModuleInstaller expects a zip. */
+    private fun repackDirectory(root: File, output: File) {
+        java.util.zip.ZipOutputStream(output.outputStream()).use { out ->
+            root.walkTopDown().filter { it.isFile }
+                .sortedBy { it.relativeTo(root).path }
+                .forEach { file ->
+                    out.putNextEntry(java.util.zip.ZipEntry(file.relativeTo(root).invariantSeparatorsPath))
+                    file.inputStream().use { it.copyTo(out) }
+                    out.closeEntry()
+                }
+        }
+    }
+
+    private suspend fun finishModuleInstall(moduleId: String, message: String) {
+        refreshModules()
+        val group = withContext(Dispatchers.IO) {
+            synchronized(ContentOperations.lock) {
+                contentStore.group(getApplication<Application>().packageName, moduleId)
+            }
+        }
+        if (group != null) loadGroup(group)
+        mutableState.update { it.copy(activeModuleId = moduleId, status = message,
+            moduleInstallEvent = it.moduleInstallEvent + 1) }
+        onOperationResult?.invoke(OperationResult(true,
+            if (group?.cardId == null) "BINDING_REQUIRED" else "SAVED", message), group?.cardId)
+    }
+
+    fun selectModule(id: String) = runOperation {
+        val group = withContext(Dispatchers.IO) {
+            synchronized(ContentOperations.lock) {
+                contentStore.group(getApplication<Application>().packageName, id)
+            }
+        } ?: error("模块尚未安装。")
+        loadGroup(group)
+        mutableState.update { it.copy(activeModuleId = id) }
+    }
+
+    fun uninstallModule(id: String) = runOperation {
+        withContext(Dispatchers.IO) {
+            synchronized(ContentOperations.lock) {
+                val group = contentStore.group(getApplication<Application>().packageName, id)
+                require(group?.cardId == null) { "请先恢复该模块绑定的载体卡片，再卸载。" }
+                if (group != null) contentStore.removeGroup(group.id)
+                moduleStore.remove(id)
+            }
+        }
+        refreshModules()
+        if (state.value.activeModuleId == id) {
+            mutableState.update { it.copy(activeModuleId = null) }
+            reloadActive()
+        }
+        mutableState.update { it.copy(status = "模块已卸载。") }
+    }
+
+    fun openModuleSettings(id: String) {
+        onOpenModuleSettings?.invoke(id)
+    }
+
+    /** The bridge protocol is only wired for carriers backed by an installed module. */
+    private fun moduleIdFor(group: ContentBinding): String? {
+        if (group.sourcePackage != getApplication<Application>().packageName) return null
+        return if (moduleStore.get(group.key) != null) group.key else null
     }
 
     fun installCarrier() = runOperation {
@@ -137,14 +238,16 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
                 val active = groups.first { it.id == groupId }
                 require(active.cardId == null || active.cardId == id) { "更换目标前请先恢复原来的载体。" }
                 require(groups.none { it.id != groupId && it.cardId == id }) {
-                    "这张卡片已绑定其他分组，请选择其他目标。"
+                    "这张卡片已绑定其他模块，请选择其他目标。"
                 }
                 val output = File.createTempFile("carrier-", ".zip", getApplication<Application>().cacheDir)
                 val snapshot = File.createTempFile("resources-", ".zip", getApplication<Application>().cacheDir)
                 try {
                     val archive = contentStore.archive(groupId)
+                    val moduleId = moduleIdFor(active)
                     builder.buildLiveCarrier(archive, output, id,
-                        "content://dev.finall.rearcardbridge.live/bindings/$groupId/current")
+                        LiveContentContract.uri(groupId).toString(),
+                        bridgeGroupId = moduleId?.let { groupId }, bridgeModuleId = moduleId)
                     builder.writeStaticResourceSnapshot(archive, snapshot)
                     client.replaceCard(id, output).also { result ->
                         if (result.success) {
@@ -157,7 +260,8 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
         }
         if (!result.success) { recordResult(result, id); return@runOperation }
         reloadActive()
-        recordResult(OperationResult(true, "CARRIER_WRITTEN", "动态载体已写入「${card.title}」"), id)
+        refreshModules()
+        recordResult(OperationResult(true, "CARRIER_WRITTEN", "载体已写入「${card.title}」，请在背屏设置中重新应用。"), id)
         openSettingsAfterWrite(id)
         refreshAfterChange()
     }
@@ -169,7 +273,7 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
             }
         }
         recordResult(result, id)
-        if (result.success) { reloadActive(); openSettingsAfterWrite(id); refreshAfterChange() }
+        if (result.success) { reloadActive(); refreshModules(); openSettingsAfterWrite(id); refreshAfterChange() }
     }
 
     fun confirmReapplied() = runOperation {
@@ -179,7 +283,7 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
         mutableState.update { it.copy(status = "已记录你的重新应用确认。") }
     }
 
-    fun reload() = runOperation(queue = true) { reloadActive() }
+    fun reload() = runOperation(queue = true) { refreshModules(); reloadActive() }
     private suspend fun reloadActive() {
         val group = withContext(Dispatchers.IO) {
             contentStore.bindings().firstOrNull { it.id == state.value.activeGroupId }
@@ -219,5 +323,10 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
             }
         }
     }
-    override fun onCleared() { onOperationResult = null; onOpenRearSettingsRequested = null; client.close() }
+    override fun onCleared() {
+        onOperationResult = null
+        onOpenRearSettingsRequested = null
+        onOpenModuleSettings = null
+        client.close()
+    }
 }

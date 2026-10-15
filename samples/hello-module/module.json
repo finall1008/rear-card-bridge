@@ -1,0 +1,10 @@
+{
+  "id": "dev.finall.sample.hello",
+  "name": "计数示例",
+  "version": "1.0.0",
+  "versionCode": 1,
+  "apiVersion": 2,
+  "description": "演示 config / storage / net / 设置页联动的最小模块",
+  "author": "RearCardBridge",
+  "capabilities": ["network", "storage"]
+}

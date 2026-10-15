@@ -11,6 +11,22 @@ data class CardInfo(
     val hasBackup: Boolean = false,
     val preview: Bitmap? = null,
 )
+
+/** One installed card module (module.json metadata plus its content group state). */
+data class ModuleInfo(
+    val id: String,
+    val name: String,
+    val version: String,
+    val versionCode: Long,
+    val description: String,
+    val author: String,
+    val capabilities: Set<String>,
+    val hasWebui: Boolean,
+    val source: String?,
+    val groupId: String?,
+    val boundCardId: String?,
+    val boundCardTitle: String?,
+)
 enum class ShizukuStatus { NOT_RUNNING, AUTH_REQUIRED, CONNECTING, READY, ERROR }
 data class ShizukuState(val status: ShizukuStatus, val message: String = "")
 data class OperationResult(val success: Boolean, val code: String, val message: String)
@@ -32,5 +48,8 @@ data class BridgeUiState(
     val boundCardTitle: String? = null,
     val error: String? = null,
     val lastReplacedCardId: String? = null,
+    val modules: List<ModuleInfo> = emptyList(),
+    val activeModuleId: String? = null,
+    val moduleInstallEvent: Long = 0,
 )
 data class PreparedCardPackage(val file: File, val entryNames: List<String>)

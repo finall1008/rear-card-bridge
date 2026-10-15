@@ -1,5 +1,6 @@
 package dev.finall.rearcardbridge.packageio
 
+import dev.finall.rearcardbridge.BuildConfig
 import dev.finall.rearcardbridge.model.PreparedCardPackage
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
@@ -44,6 +45,8 @@ class CardPackageBuilder {
         output: File,
         cardId: String,
         contentUri: String,
+        bridgeGroupId: String? = null,
+        bridgeModuleId: String? = null,
     ): PreparedCardPackage {
         val name = jsCanvasName(cardId)
         require(!output.isDirectory) { "输出路径是目录" }
@@ -52,7 +55,8 @@ class CardPackageBuilder {
             openZip(input).use { zip ->
                 return PreparedCardPackage(
                     output,
-                    writePackage(zip, parse(zip), output, name, live = true, contentUri = contentUri),
+                    writePackage(zip, parse(zip), output, name, live = true, contentUri = contentUri,
+                        bridgeGroupId = bridgeGroupId, bridgeModuleId = bridgeModuleId),
                 )
             }
         }
@@ -62,7 +66,7 @@ class CardPackageBuilder {
         try {
             ZipOutputStream(tmp.outputStream()).use { zip ->
                 zip.putNextEntry(ZipEntry("manifest.xml"))
-                zip.write(liveManifestXml(name, contentUri).toByteArray(Charsets.UTF_8))
+                zip.write(liveManifestXml(name, contentUri, bridgeGroupId, bridgeModuleId).toByteArray(Charsets.UTF_8))
                 zip.closeEntry()
             }
             moveReplace(tmp, output)
@@ -230,6 +234,8 @@ class CardPackageBuilder {
         canvasName: String,
         live: Boolean = false,
         contentUri: String? = null,
+        bridgeGroupId: String? = null,
+        bridgeModuleId: String? = null,
     ): List<String> {
         val parent = output.absoluteFile.parentFile
             ?: throw IllegalArgumentException("无法写入输出压缩包：没有父目录")
@@ -241,7 +247,7 @@ class CardPackageBuilder {
         try {
             ZipOutputStream(tmp.outputStream()).use { out ->
                 val manifest = (
-                    if (live) liveManifestXml(canvasName, requireNotNull(contentUri))
+                    if (live) liveManifestXml(canvasName, requireNotNull(contentUri), bridgeGroupId, bridgeModuleId)
                     else manifestXml(canvasName, loaded.combinedScript)
                 ).toByteArray(Charsets.UTF_8)
                 out.putNextEntry(ZipEntry("manifest.xml"))
@@ -280,20 +286,74 @@ class CardPackageBuilder {
         append("</Widget>\n")
     }
 
-    private fun liveManifestXml(canvasName: String, contentUri: String): String = """
+    /**
+     * Live carrier manifest. With a module id it additionally wires the bridge protocol
+     * validated on-device: every second MAML reads the JsCanvas SharedPreferences key the
+     * runtime writes from localStorage, forwards new outbox batches through
+     * ContentResolver.call, and publishes batch acks / synchronous results / polled results
+     * back as HostVars.
+     */
+    private fun liveManifestXml(
+        canvasName: String,
+        contentUri: String,
+        bridgeGroupId: String? = null,
+        bridgeModuleId: String? = null,
+    ): String {
+        val bridge = if (bridgeGroupId != null && bridgeModuleId != null) {
+            bridgeManifestSection(canvasName, bridgeGroupId)
+        } else ""
+        val bridgeBinders = if (bridgeGroupId != null && bridgeModuleId != null) """
+            <ContentProviderBinder name="bridge_results_source" uri="content://${BuildConfig.APPLICATION_ID}.bridge/results/${xmlAttr(bridgeGroupId)}" columns="payload" updateInterval="1">
+              <Variable name="bridge_results" type="string" column="payload" row="0"/>
+            </ContentProviderBinder>""" else ""
+        val bridgeHostVars = if (bridgeGroupId != null && bridgeModuleId != null) """
+            <HostVar name="bridge_results" type="string"/>
+            <HostVar name="bridge_outbox_ack" type="string"/>
+            <HostVar name="bridge_sync" type="string"/>""" else ""
+        return """
         <?xml version="1.0" encoding="UTF-8"?>
         <Widget version="2" frameRate="30" screenWidth="912" clearCanvas="true">
           <VariableBinders>
             <ContentProviderBinder name="bridge_live_source" uri="${xmlAttr(contentUri)}" columns="payload" updateInterval="1">
               <Variable name="bridge_live_payload" type="string" column="payload" row="0"/>
-            </ContentProviderBinder>
-          </VariableBinders>
+            </ContentProviderBinder>$bridgeBinders
+          </VariableBinders>$bridge
           <JsCanvas name="${xmlAttr(canvasName)}" w="#view_width" h="#view_height">
-            <HostVar name="bridge_live_payload" type="string"/>
-            <Script>${cdata(LiveCarrierRuntime.script(canvasName))}</Script>
+            <HostVar name="bridge_live_payload" type="string"/>$bridgeHostVars
+            <Script>${cdata(LiveCarrierRuntime.script(canvasName, bridgeModuleId))}</Script>
           </JsCanvas>
         </Widget>
     """.trimIndent().trim()
+    }
+
+    /**
+     * Native-side half of the bridge protocol. The JsCanvas localStorage of the host writes
+     * into SharedPreferences named jscanvas_<canvasName.hashCode hex>_<customEditLocalId|0>;
+     * this block polls the outbox key once per second and forwards unseen batches.
+     */
+    private fun bridgeManifestSection(canvasName: String, groupId: String): String {
+        val prefsHash = Integer.toHexString(canvasName.hashCode())
+        return """
+          <Var name="bridge_tick" expression="int(#time/1000)" threshold="1">
+            <Trigger>
+              <FieldCommand class="com.miui.maml.ScreenContext" target="__objContext" targetType="var" field="mContext" method="get" return="bridge_ctx" returnType="object"/>
+              <MethodCommand class="android.content.Context" target="bridge_ctx" targetType="var" method="createDeviceProtectedStorageContext" return="bridge_dp" returnType="object"/>
+              <MethodCommand class="android.content.Context" target="bridge_dp" targetType="var" method="getSharedPreferences" paramTypes="java.lang.String,int" params="'jscanvas_${prefsHash}_' + ifelse(eq(len(@customEditLocalId),0),'0',@customEditLocalId),0" return="bridge_prefs" returnType="object"/>
+              <MethodCommand class="android.content.SharedPreferences" target="bridge_prefs" targetType="var" method="getString" paramTypes="java.lang.String,java.lang.String" params="'bridge_outbox',''" return="bridge_outbox" returnType="string"/>
+              <IfCommand ifCondition="gt(len(@bridge_outbox),0)*not(eqs(@bridge_outbox,@bridge_outbox_seen))">
+                <Consequent>
+                  <VariableCommand name="bridge_outbox_seen" expression="@bridge_outbox" type="string"/>
+                  <MethodCommand class="android.content.Context" target="bridge_ctx" targetType="var" method="getContentResolver" return="bridge_resolver" returnType="object"/>
+                  <MethodCommand class="android.os.Bundle" target="bridge_extras" targetType="ctor" method="Bundle" return="bridge_extras" returnType="object"/>
+                  <MethodCommand class="android.os.Bundle" target="bridge_extras" targetType="var" method="putString" paramTypes="java.lang.String,java.lang.String" params="'payload',@bridge_outbox"/>
+                  <MethodCommand class="android.content.ContentResolver" target="bridge_resolver" targetType="var" method="call" paramTypes="java.lang.String,java.lang.String,java.lang.String,android.os.Bundle" params="'${BuildConfig.APPLICATION_ID}.bridge','bridge_batch','${xmlAttr(groupId)}','bridge_extras'" return="bridge_result" returnType="object"/>
+                  <MethodCommand class="android.os.Bundle" target="bridge_result" targetType="var" method="getString" paramTypes="java.lang.String" params="'batch'" return="bridge_outbox_ack" returnType="string"/>
+                  <MethodCommand class="android.os.Bundle" target="bridge_result" targetType="var" method="getString" paramTypes="java.lang.String" params="'sync_results'" return="bridge_sync" returnType="string"/>
+                </Consequent>
+              </IfCommand>
+            </Trigger>
+          </Var>"""
+    }
 
     private fun openZip(input: File): ZipFile {
         if (!input.isFile) throw IllegalArgumentException("找不到输入压缩包：${input.path}")

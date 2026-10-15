@@ -12,12 +12,13 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.finall.rearcardbridge.ui.BridgeScreen
+import dev.finall.rearcardbridge.ui.ModuleSettingsActivity
 
 class MainActivity : ComponentActivity() {
     private val viewModel: BridgeViewModel by viewModels()
     private var requestId: String? = null
-    private val pickPackage = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri?.let { viewModel.receivePackage(it) }
+    private val pickModule = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let { viewModel.installModuleZip(it) }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -32,16 +33,23 @@ class MainActivity : ComponentActivity() {
                     .putExtra("revision", viewModel.state.value.contentRevision))
         }
         viewModel.onOpenRearSettingsRequested = ::openRearSettings
+        viewModel.onOpenModuleSettings = { id ->
+            startActivity(ModuleSettingsActivity.intent(this, id))
+        }
         setContent {
             val state = viewModel.state.collectAsStateWithLifecycle().value
             BridgeScreen(state = state,
                 onAuthorize = viewModel::authorize, onRefresh = viewModel::refresh,
-                onPickPackage = { pickPackage.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream")) },
                 onSelectCard = viewModel::selectCard, onInstallCarrier = viewModel::installCarrier,
                 onRestore = viewModel::restore, onOpenRearSettings = viewModel::openRearSettings,
                 onDismissError = viewModel::dismissError,
-                onSelectGroup = viewModel::selectGroup,
-                onConfirmReapplied = viewModel::confirmReapplied)
+                onConfirmReapplied = viewModel::confirmReapplied,
+                onInstallModuleZip = { pickModule.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream")) },
+                onInstallModuleGit = viewModel::installModuleGit,
+                onSelectModule = viewModel::selectModule,
+                onUninstallModule = viewModel::uninstallModule,
+                onUpdateModule = viewModel::updateModule,
+                onOpenModuleSettings = viewModel::openModuleSettings)
         }
         if (savedInstanceState == null) handleIntent(intent)
     }
@@ -54,13 +62,13 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        handleIntent(intent, null)
+        handleIntent(intent)
     }
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putString(EXTRA_REQUEST_ID, requestId)
         super.onSaveInstanceState(outState)
     }
-    private fun handleIntent(intent: Intent, sourcePackage: String? = callingPackage) {
+    private fun handleIntent(intent: Intent) {
         val uri: Uri? = when (intent.action) {
             ACTION_UPDATE_CONTENT -> {
                 if (intent.getIntExtra("api_version", 0) != 2) {
@@ -73,14 +81,10 @@ class MainActivity : ComponentActivity() {
             else -> null
         }
         if (intent.action == ACTION_UPDATE_CONTENT || intent.action == Intent.ACTION_SEND) {
-            if (viewModel.state.value.busy && viewModel.state.value.packageName != null) {
-                viewModel.rejectInput("正在处理上一项操作，请结束后重新传入 ZIP。")
-                return
-            }
             requestId = intent.getStringExtra(EXTRA_REQUEST_ID)
             setResult(Activity.RESULT_CANCELED)
             if (uri == null) viewModel.rejectInput("Intent 未包含整包 content:// URI。")
-            else viewModel.receiveExternal(uri, sourcePackage, intent.getStringExtra("key"))
+            else viewModel.receiveExternal(uri)
         }
     }
     private fun openRearSettings(cardId: String?): OperationResult {
@@ -90,8 +94,8 @@ class MainActivity : ComponentActivity() {
         return try {
             startActivity(Intent("miui.intent.action.rearscreen_setting").setClassName(
                 "com.android.thememanager", "com.rearScreen.RearScreenSettingActivity"))
-            val message = if (title != null) "请移除旧卡后，在「我生成的」重新应用「$title」"
-                else "请在「智能应用 → 我生成的」设置载体卡片"
+            val message = if (title != null) "请在背屏设置中移除旧卡并重新应用「$title」"
+                else "请在背屏设置中应用载体卡片"
             Toast.makeText(this, message, Toast.LENGTH_LONG).show()
             OperationResult(true, "SETTINGS_OPENED", "背屏设置已打开。")
         } catch (error: Exception) {
@@ -101,6 +105,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         viewModel.onOperationResult = null
         viewModel.onOpenRearSettingsRequested = null
+        viewModel.onOpenModuleSettings = null
         super.onDestroy()
     }
     companion object {

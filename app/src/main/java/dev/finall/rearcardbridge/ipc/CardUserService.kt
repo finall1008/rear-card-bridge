@@ -1,6 +1,7 @@
 package dev.finall.rearcardbridge.ipc
 
 import android.os.ParcelFileDescriptor
+import dev.finall.rearcardbridge.BuildConfig
 import android.system.Os
 import android.util.Xml
 import java.io.File
@@ -14,7 +15,7 @@ import org.xmlpull.v1.XmlPullParser
 /** Runs as Shizuku shell; exposes only card operations, never arbitrary paths or commands. */
 class CardUserService : ICardService.Stub() {
     private val resourceRoot = File("/storage/emulated/0/Android/data/com.android.thememanager/files/MIUI/.ai_app")
-    private val backupRoot = File("/storage/emulated/0/Android/data/dev.finall.rearcardbridge/files/backups")
+    private val backupRoot = File("/storage/emulated/0/Android/data/" + BuildConfig.APPLICATION_ID + "/files/backups")
 
     @Synchronized
     override fun listCards(): String {

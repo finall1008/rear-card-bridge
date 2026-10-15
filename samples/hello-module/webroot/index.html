@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>计数示例设置</title>
+  <script src="bridge-shim.js"></script>
+  <style>
+    body { font-family: sans-serif; margin: 24px; background: #10142b; color: #f2f3f7; }
+    label { display: block; margin: 16px 0 4px; color: #8b93b8; }
+    input { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #33395e; background: #1b2140; color: inherit; box-sizing: border-box; }
+    button { margin-top: 20px; padding: 12px; width: 100%; border: 0; border-radius: 8px; background: #3482ff; color: #fff; font-size: 16px; }
+    #status { margin-top: 12px; color: #8b93b8; }
+  </style>
+</head>
+<body>
+  <h2>计数示例</h2>
+  <label for="title">卡片标题</label>
+  <input id="title" placeholder="计数器">
+  <button id="save">保存并刷新卡片</button>
+  <button id="plus" style="background:#2b7a4b">计数 +1</button>
+  <div id="status"></div>
+  <script>
+    var status = document.getElementById('status');
+    if (typeof bridge === 'undefined') {
+      status.textContent = '桥不可用：请从卡片桥 App 打开本页。';
+    } else {
+      bridge.config.get('title').then(function (title) {
+        if (title) document.getElementById('title').value = title;
+      });
+      document.getElementById('save').onclick = function () {
+        bridge.config.set('title', document.getElementById('title').value)
+          .then(function () { return bridge.card.requestRefresh(); })
+          .then(function () { status.textContent = '已保存，卡片已刷新。'; })
+          .catch(function (e) { status.textContent = '保存失败：' + e.message; });
+      };
+      document.getElementById('plus').onclick = function () {
+        bridge.storage.get('count').then(function (count) {
+          return bridge.storage.set('count', (typeof count === 'number' ? count : 0) + 1);
+        }).then(function () { return bridge.card.requestRefresh(); })
+          .then(function () { status.textContent = '已 +1。'; })
+          .catch(function (e) { status.textContent = '操作失败：' + e.message; });
+      };
+    }
+  </script>
+</body>
+</html>

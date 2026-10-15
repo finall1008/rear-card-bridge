@@ -1,6 +1,7 @@
 package dev.finall.rearcardbridge.live
 
 import android.content.Context
+import dev.finall.rearcardbridge.BuildConfig
 import android.net.Uri
 import android.util.AtomicFile
 import dev.finall.rearcardbridge.packageio.CardPackageBuilder
@@ -12,7 +13,7 @@ import org.json.JSONObject
 
 object ContentOperations { val lock = Any() }
 object LiveContentContract {
-    const val AUTHORITY = "dev.finall.rearcardbridge.live"
+    val AUTHORITY: String = BuildConfig.APPLICATION_ID + ".live"
     const val COLUMN_PAYLOAD = "payload"
     fun uri(id: String): Uri = Uri.parse("content://$AUTHORITY/bindings/$id/current")
 }
@@ -34,7 +35,7 @@ data class CarrierResourceStatus(
         CarrierResourceState.UNKNOWN -> "尚无资源比对记录，请更新载体以建立快照。"
         CarrierResourceState.CURRENT -> "静态资源一致，无需重新安装载体。"
         CarrierResourceState.UPDATE_REQUIRED -> "静态资源有变化：新增 ${changes!!.added.size} 个、修改 ${changes.modified.size} 个、删除 ${changes.removed.size} 个。请更新载体，再移除旧卡并重新应用。"
-        CarrierResourceState.REAPPLY_REQUIRED -> "载体资源已写入，请到「我生成的」移除旧卡并重新应用。"
+        CarrierResourceState.REAPPLY_REQUIRED -> "载体资源已写入，请到背屏设置中移除旧卡并重新应用。"
     }
 }
 
@@ -77,6 +78,12 @@ class LiveContentStore(private val context: Context) {
             installedResources(it.id).delete()
             reapplyPending(it.id).delete()
         }
+    }
+
+    /** Removes a module's content group together with its stored content. */
+    fun removeGroup(id: String) = synchronized(ContentOperations.lock) {
+        writeBindings(bindings().filterNot { it.id == id })
+        directory(id).deleteRecursively()
     }
 
     private fun installedResources(id: String) = AtomicFile(File(directory(id), "installed-resources.zip"))

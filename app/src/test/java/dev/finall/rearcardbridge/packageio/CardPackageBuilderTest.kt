@@ -216,6 +216,47 @@ class CardPackageBuilderTest {
 
     }
 
+    @Test
+    fun moduleCarrierWiresBridgeProtocol() {
+        val root = Files.createTempDirectory("rear-module-carrier").toFile()
+        val input = pack(root, "content.zip", "<canvas></canvas><script src=\"main.js\"></script>", "var x = 1;")
+        val groupId = "3f6f9c7c-2c5b-4d4f-9c4d-2f8a2a4f9a11"
+        val output = File(root, "module-carrier.zip")
+        builder.buildLiveCarrier(input, output, "module/card",
+            "content://dev.finall.rearcardbridge.live/bindings/$groupId/current",
+            bridgeGroupId = groupId, bridgeModuleId = "dev.example.weather")
+        ZipFile(output).use { zip ->
+            val xml = zip.getInputStream(zip.getEntry("manifest.xml")).readBytes().toString(Charsets.UTF_8)
+            val widget = parseXml(xml)
+            val binders = widget.getElementsByTagName("ContentProviderBinder")
+            val uris = (0 until binders.length).map { (binders.item(it) as Element).getAttribute("uri") }
+            val bridgeAuthority = dev.finall.rearcardbridge.BuildConfig.APPLICATION_ID + ".bridge"
+            assertTrue(uris.contains("content://$bridgeAuthority/results/$groupId"))
+            val canvas = widget.getElementsByTagName("JsCanvas").item(0) as Element
+            val hostVars = canvas.getElementsByTagName("HostVar")
+            val hostNames = (0 until hostVars.length).map { (hostVars.item(it) as Element).getAttribute("name") }
+            assertTrue(hostNames.containsAll(listOf("bridge_live_payload", "bridge_results", "bridge_outbox_ack", "bridge_sync")))
+            val prefsName = "jscanvas_" + Integer.toHexString("module_card".hashCode()) + "_"
+            assertTrue(xml.contains("'$prefsName' + ifelse(eq(len(@customEditLocalId),0),'0',@customEditLocalId)"))
+            assertTrue(xml.contains("'$bridgeAuthority','bridge_batch','$groupId','bridge_extras'"))
+            val script = canvas.getElementsByTagName("Script").item(0).textContent
+            assertTrue(script.contains("var MODULE_ID = 'dev.example.weather';"))
+            assertTrue(script.contains("localStorage.setItem('bridge_outbox'"))
+        }
+        val plain = File(root, "plain-carrier.zip")
+        builder.buildLiveCarrier(input, plain, "module/card",
+            "content://dev.finall.rearcardbridge.live/bindings/$groupId/current")
+        ZipFile(plain).use { zip ->
+            val xml = zip.getInputStream(zip.getEntry("manifest.xml")).readBytes().toString(Charsets.UTF_8)
+            assertFalse(xml.contains("dev.finall.rearcardbridge.bridge"))
+            val hostVars = parseXml(xml).getElementsByTagName("HostVar")
+            val hostNames = (0 until hostVars.length).map { (hostVars.item(it) as Element).getAttribute("name") }
+            assertEquals(listOf("bridge_live_payload"), hostNames)
+            assertTrue(parseXml(xml).getElementsByTagName("Script").item(0).textContent
+                .contains("var MODULE_ID = '';"))
+        }
+    }
+
     private fun pack(root: File, name: String, body: String, main: String): File =
         zip(
             File(root, name),

@@ -1,191 +1,189 @@
 package dev.finall.rearcardbridge.ui
 
+import android.content.Intent
+import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
+import dev.finall.rearcardbridge.BuildConfig
 import dev.finall.rearcardbridge.live.CarrierResourceState
 import dev.finall.rearcardbridge.model.BridgeUiState
+import dev.finall.rearcardbridge.model.ModuleInfo
 import dev.finall.rearcardbridge.model.ShizukuStatus
-import top.yukonga.miuix.kmp.basic.BasicComponent
-import top.yukonga.miuix.kmp.basic.Button
-import top.yukonga.miuix.kmp.basic.ButtonDefaults
-import top.yukonga.miuix.kmp.basic.Card
-import top.yukonga.miuix.kmp.basic.RadioButton
-import top.yukonga.miuix.kmp.basic.Scaffold
-import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TopAppBar
+import top.yukonga.miuix.kmp.basic.*
+import top.yukonga.miuix.kmp.icon.MiuixIcons
+import top.yukonga.miuix.kmp.icon.extended.Back
+import top.yukonga.miuix.kmp.icon.extended.ChevronForward
+import top.yukonga.miuix.kmp.icon.extended.GridView
+import top.yukonga.miuix.kmp.icon.extended.Home
+import top.yukonga.miuix.kmp.icon.extended.Settings
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.ThemeController
 import top.yukonga.miuix.kmp.window.WindowDialog
+
+private enum class HomePage { LIST, DETAIL, TARGETS }
 
 @Composable
 fun BridgeScreen(
     state: BridgeUiState,
     onAuthorize: () -> Unit,
     onRefresh: () -> Unit,
-    onPickPackage: () -> Unit,
     onSelectCard: (String) -> Unit,
     onInstallCarrier: () -> Unit,
     onRestore: (String) -> Unit,
     onOpenRearSettings: (String?) -> Unit,
     onDismissError: () -> Unit,
-    onSelectGroup: (String) -> Unit,
     onConfirmReapplied: () -> Unit,
+    onInstallModuleZip: () -> Unit,
+    onInstallModuleGit: (String, String?) -> Unit,
+    onSelectModule: (String) -> Unit,
+    onUninstallModule: (String) -> Unit,
+    onUpdateModule: (String) -> Unit,
+    onOpenModuleSettings: (String) -> Unit,
 ) {
-    var showSetup by remember(state.activeGroupId, state.boundCardId) { mutableStateOf(state.boundCardId == null) }
-    var showEntries by remember { mutableStateOf(false) }
-    var confirmInstall by remember { mutableStateOf(false) }
+    var tab by rememberSaveable { mutableIntStateOf(0) }
+    var page by rememberSaveable { mutableStateOf(HomePage.LIST) }
+    var detailId by rememberSaveable { mutableStateOf<String?>(null) }
+    var handledInstall by rememberSaveable { mutableLongStateOf(0L) }
+    var showGit by remember { mutableStateOf(false) }
+    var confirmWrite by remember { mutableStateOf(false) }
     var confirmRestore by remember { mutableStateOf(false) }
+    var confirmUninstall by remember { mutableStateOf(false) }
+    val module = state.modules.firstOrNull { it.id == detailId }
     val ready = state.shizuku.status == ShizukuStatus.READY
-    val selected = state.cards.firstOrNull { it.id == state.selectedCardId }
-    val resources = state.carrierResources
-    val needsResourceUpdate = resources?.state == CarrierResourceState.UPDATE_REQUIRED ||
-        resources?.state == CarrierResourceState.UNKNOWN
-    val themeController = remember { ThemeController() }
-    MiuixTheme(controller = themeController) {
-        Scaffold(topBar = { TopAppBar(title = "背屏卡片桥") }) { padding ->
-            LazyColumn(
-                modifier = Modifier.fillMaxSize().padding(padding),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                item {
-                    Card(Modifier.fillMaxWidth()) {
-                        BasicComponent(title = "内容分组", summary = "来源 App / key → 目标卡片；各组独立更新")
-                        state.groups.forEach { group ->
-                            BasicComponent(title = group.sourcePackage,
-                                summary = "${group.key} → ${group.cardTitle ?: "待选择目标"}",
-                                endActions = { RadioButton(selected = group.id == state.activeGroupId, onClick = null) },
-                                onClick = { onSelectGroup(group.id) }, enabled = !state.busy)
-                        }
+    val active = module != null && module.id == state.activeModuleId
+    val rootPage = tab == 1 || page == HomePage.LIST
+
+    LaunchedEffect(state.moduleInstallEvent) {
+        if (state.moduleInstallEvent > handledInstall) {
+            handledInstall = state.moduleInstallEvent
+            detailId = state.activeModuleId
+            tab = 0
+            page = if (state.boundCardId == null) HomePage.TARGETS else HomePage.DETAIL
+        }
+    }
+    LaunchedEffect(state.modules, state.busy) {
+        if (!state.busy && detailId != null && module == null) {
+            detailId = null
+            page = HomePage.LIST
+        }
+    }
+    val back: () -> Unit = {
+        when {
+            tab == 1 -> tab = 0
+            page == HomePage.TARGETS -> page = HomePage.DETAIL
+            else -> page = HomePage.LIST
+        }
+    }
+    BackHandler(tab == 1 || page != HomePage.LIST) { back() }
+    val title = when {
+        tab == 1 -> "设置与关于"
+        page == HomePage.TARGETS -> "选择替换目标"
+        page == HomePage.DETAIL -> module?.name ?: "模块详情"
+        else -> "背屏卡片桥"
+    }
+
+    val theme = remember { ThemeController() }
+    MiuixTheme(controller = theme) {
+        Scaffold(
+            topBar = {
+                if (rootPage) TopAppBar(title = title)
+                else SmallTopAppBar(title = title, navigationIcon = {
+                    IconButton(onClick = back) {
+                        Icon(MiuixIcons.Back, contentDescription = "返回")
                     }
+                })
+            },
+            bottomBar = {
+                if (rootPage) FloatingNavigationBar {
+                    FloatingNavigationBarItem(selected = tab == 0,
+                        onClick = { tab = 0; page = HomePage.LIST }, icon = MiuixIcons.Home, label = "主页")
+                    FloatingNavigationBarItem(selected = tab == 1,
+                        onClick = { tab = 1 }, icon = MiuixIcons.Settings, label = "设置与关于")
                 }
-                item {
-                    Card(Modifier.fillMaxWidth()) {
-                        BasicComponent(title = "当前内容", summary = state.packageName?.let {
-                            "$it · 版本 ${state.contentRevision}"
-                        } ?: "尚未导入内容")
-                        if (state.packageName != null) {
-                            Text("已导入并保存，无需再次导入。",
-                                modifier = Modifier.padding(horizontal = 16.dp).padding(bottom = 12.dp))
-                        }
-                        Button(onClick = onPickPackage,
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 16.dp),
-                            colors = ButtonDefaults.buttonColorsPrimary(), enabled = !state.busy) {
-                            Text("选择 ZIP 导入")
-                        }
-                        if (state.packageEntries.isNotEmpty()) {
-                            BasicComponent(title = "包内文件", summary = "${state.packageEntries.size} 个文件",
-                                onClick = { showEntries = !showEntries })
-                            if (showEntries) Text(state.packageEntries.joinToString("\n"),
-                                modifier = Modifier.padding(horizontal = 16.dp).padding(bottom = 16.dp))
-                        }
+            },
+        ) { padding ->
+            Box(Modifier.fillMaxSize().padding(padding)) {
+                when {
+                    tab == 1 -> SettingsPage(state, onAuthorize, onRefresh)
+                    page == HomePage.LIST -> ModuleListPage(state, onInstallModuleZip,
+                        onInstallGit = { showGit = true }, onOpenModule = {
+                            detailId = it; page = HomePage.DETAIL; onSelectModule(it)
+                        })
+                    module == null || !active -> Card(Modifier.padding(16.dp).fillMaxWidth()) {
+                        BasicComponent(title = "正在读取模块…")
                     }
+                    page == HomePage.TARGETS -> TargetPickerPage(state, ready, onSelectCard) {
+                        confirmWrite = true
+                    }
+                    else -> ModuleDetailPage(state, module,
+                        onOpenSettings = { onOpenModuleSettings(module.id) },
+                        onUpdate = { onUpdateModule(module.id) },
+                        onUninstall = { confirmUninstall = true },
+                        onPickTarget = { page = HomePage.TARGETS },
+                        onRestore = { confirmRestore = true },
+                        onOpenRearSettings = { onOpenRearSettings(module.boundCardId) },
+                        onConfirmReapplied = onConfirmReapplied)
                 }
-                item {
-                    Card(Modifier.fillMaxWidth()) {
-                        BasicComponent(title = state.boundCardTitle?.let { "载体：$it" } ?: "尚未绑定载体",
-                            summary = state.boundCardId,
-                            onClick = { showSetup = !showSetup })
-                        if (resources != null) {
-                            BasicComponent(title = "静态资源", summary = resources.message)
-                            if (needsResourceUpdate) {
-                                Button(onClick = { confirmInstall = true },
-                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 12.dp),
-                                    colors = ButtonDefaults.buttonColorsPrimary(),
-                                    enabled = ready && !state.busy && selected?.canReplace == true &&
-                                        selected.id == state.boundCardId) { Text("更新载体资源") }
-                                if (!ready) Text("请展开配置载体，连接 Shizuku 后更新。",
-                                    modifier = Modifier.padding(horizontal = 16.dp).padding(bottom = 12.dp))
-                            }
-                            if (resources.state == CarrierResourceState.REAPPLY_REQUIRED) {
-                                Button(onClick = { onOpenRearSettings(state.boundCardId) },
-                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 12.dp),
-                                    enabled = !state.busy) { Text("打开背屏设置") }
-                                Button(onClick = onConfirmReapplied,
-                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 12.dp),
-                                    enabled = !state.busy) { Text("我已移除旧卡并重新应用") }
-                            }
-                        }
-                        Button(onClick = { showSetup = !showSetup },
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 16.dp),
-                            enabled = !state.busy) { Text(if (showSetup) "收起载体设置" else "配置载体") }
-                    }
-                }
-                if (showSetup) {
-                    item {
-                        Text(if (state.boundCardId == null) "载体安装 · 首次设置" else "载体设置", style = MiuixTheme.textStyles.title4)
-                        Spacer(Modifier.height(8.dp))
-                        Card(Modifier.fillMaxWidth()) {
-                            BasicComponent(title = when (state.shizuku.status) {
-                                ShizukuStatus.NOT_RUNNING -> "Shizuku 未运行"
-                                ShizukuStatus.AUTH_REQUIRED -> "需要 Shizuku 授权"
-                                ShizukuStatus.CONNECTING -> "正在连接 Shizuku"
-                                ShizukuStatus.READY -> "Shizuku 已连接"
-                                ShizukuStatus.ERROR -> "Shizuku 连接失败"
-                            }, summary = state.shizuku.message.takeIf { it.isNotBlank() })
-                            Button(onClick = if (ready) onRefresh else onAuthorize,
-                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 16.dp),
-                                enabled = !state.busy) { Text(if (ready) "刷新载体资源" else "授权 / 连接") }
-                        }
-                    }
-                    if (state.cards.isEmpty()) item {
-                        Text(if (ready) "暂无载体资源。" else "连接 Shizuku 后选择载体。")
-                    }
-                    items(state.cards, key = { it.id }) { card ->
-                        Card(Modifier.fillMaxWidth()) {
-                            BasicComponent(title = card.title,
-                                summary = if (card.canReplace) card.id else "只读 · ${card.id}",
-                                startAction = card.preview?.let { bitmap ->
-                                    { Image(bitmap.asImageBitmap(), card.title, Modifier.size(56.dp)) }
-                                },
-                                endActions = { RadioButton(selected = card.id == state.selectedCardId, onClick = null) },
-                                onClick = { onSelectCard(card.id) }, role = Role.RadioButton,
-                                enabled = ready && card.canReplace && !state.busy)
-                        }
-                    }
-                    item {
-                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Button(onClick = { confirmInstall = true }, modifier = Modifier.fillMaxWidth(),
-                                colors = ButtonDefaults.buttonColorsPrimary(),
-                                enabled = ready && !state.busy && selected?.canReplace == true) {
-                                Text(if (state.boundCardId != null) "更新载体资源" else "安装并绑定动态载体")
-                            }
-                            Button(onClick = { onOpenRearSettings(selected?.id ?: state.boundCardId) },
-                                modifier = Modifier.fillMaxWidth(), enabled = !state.busy) { Text("打开背屏设置") }
-                            if (selected?.hasBackup == true) Button(onClick = { confirmRestore = true },
-                                modifier = Modifier.fillMaxWidth(), enabled = ready && !state.busy) {
-                                Text("恢复原始资源")
-                            }
-                        }
-                    }
-                }
-                item { Text(if (state.busy) "正在处理…" else state.status) }
             }
         }
-        WindowDialog(show = confirmInstall,
-            title = if (state.boundCardId != null) "更新「${selected?.title.orEmpty()}」的载体资源？" else "绑定「${selected?.title.orEmpty()}」？",
-            summary = "写入最新载体包后，请到「我生成的」移除旧卡并重新应用。",
-            onDismissRequest = { confirmInstall = false }) {
+
+        WindowDialog(show = showGit, title = "仓库安装",
+            summary = "公开的 GitHub、GitLab 或 Gitee 仓库，根目录需包含 module.json。",
+            onDismissRequest = { showGit = false }) {
+            val url = rememberTextFieldState()
+            val branch = rememberTextFieldState()
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                TextField(state = url, label = "仓库 URL", useLabelAsPlaceholder = true)
+                TextField(state = branch, label = "分支（默认 main）", useLabelAsPlaceholder = true)
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Button(onClick = { showGit = false }, modifier = Modifier.weight(1f)) { Text("取消") }
+                    Button(onClick = {
+                        showGit = false
+                        onInstallModuleGit(url.text.toString(), branch.text.toString().ifBlank { null })
+                    }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColorsPrimary(),
+                        enabled = !state.busy && url.text.isNotBlank()) { Text("安装") }
+                }
+            }
+        }
+        WindowDialog(show = confirmWrite, title = "写入替换目标？",
+            summary = "将「${state.cards.firstOrNull { it.id == state.selectedCardId }?.title.orEmpty()}」作为本模块载体。原始资源会备份；写入后仍需在系统里重新应用。",
+            onDismissRequest = { confirmWrite = false }) {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Button(onClick = { confirmInstall = false }, modifier = Modifier.weight(1f)) { Text("取消") }
-                Button(onClick = { confirmInstall = false; onInstallCarrier() }, modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColorsPrimary(), enabled = !state.busy) { Text("安装") }
+                Button(onClick = { confirmWrite = false }, modifier = Modifier.weight(1f)) { Text("取消") }
+                Button(onClick = { confirmWrite = false; page = HomePage.DETAIL; onInstallCarrier() },
+                    modifier = Modifier.weight(1f), enabled = !state.busy,
+                    colors = ButtonDefaults.buttonColorsPrimary()) { Text("写入") }
             }
         }
         WindowDialog(show = confirmRestore, title = "恢复原始资源？",
-            summary = "用首次备份恢复所选卡片资源。", onDismissRequest = { confirmRestore = false }) {
+            summary = "恢复此目标的原始资源并解除模块绑定。之后请在系统里重新应用原卡片。",
+            onDismissRequest = { confirmRestore = false }) {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(onClick = { confirmRestore = false }, modifier = Modifier.weight(1f)) { Text("取消") }
-                Button(onClick = { selected?.let { onRestore(it.id) }; confirmRestore = false },
-                    modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColorsPrimary(),
-                    enabled = !state.busy) { Text("恢复") }
+                Button(onClick = { confirmRestore = false; module?.boundCardId?.let(onRestore) },
+                    modifier = Modifier.weight(1f), enabled = ready && !state.busy,
+                    colors = ButtonDefaults.buttonColorsPrimary()) { Text("恢复") }
+            }
+        }
+        WindowDialog(show = confirmUninstall, title = "卸载模块？",
+            summary = "删除模块及其配置、业务数据。已绑定的模块须先恢复原始资源。",
+            onDismissRequest = { confirmUninstall = false }) {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Button(onClick = { confirmUninstall = false }, modifier = Modifier.weight(1f)) { Text("取消") }
+                Button(onClick = { confirmUninstall = false; module?.id?.let(onUninstallModule) },
+                    modifier = Modifier.weight(1f), enabled = !state.busy,
+                    colors = ButtonDefaults.buttonColorsPrimary()) { Text("卸载") }
             }
         }
         WindowDialog(show = state.error != null, title = "操作提示", summary = state.error,
@@ -194,4 +192,186 @@ fun BridgeScreen(
                 colors = ButtonDefaults.buttonColorsPrimary()) { Text("确定") }
         }
     }
+}
+
+@Composable
+private fun ModuleListPage(state: BridgeUiState, onInstallZip: () -> Unit,
+    onInstallGit: () -> Unit, onOpenModule: (String) -> Unit) {
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        item {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Button(onClick = onInstallZip, modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColorsPrimary(), enabled = !state.busy) {
+                    Text("导入 ZIP", maxLines = 1)
+                }
+                Button(onClick = onInstallGit, modifier = Modifier.weight(1f), enabled = !state.busy) {
+                    Text("仓库安装", maxLines = 1)
+                }
+            }
+        }
+        if (state.modules.isEmpty()) item {
+            Card(Modifier.fillMaxWidth()) {
+                BasicComponent(title = "还没有卡片模块", summary = "导入模块 ZIP 后，选择一张本地卡片作为替换目标。",
+                    startAction = { Icon(MiuixIcons.GridView, contentDescription = null, modifier = Modifier.size(32.dp)) })
+            }
+        }
+        items(state.modules, key = { it.id }) { module ->
+            Card(Modifier.fillMaxWidth()) {
+                BasicComponent(title = module.name,
+                    summary = "${module.version} · ${module.boundCardTitle?.let { "替换 $it" } ?: "待选择替换目标"}",
+                    startAction = { Icon(MiuixIcons.GridView, contentDescription = null, modifier = Modifier.size(36.dp)) },
+                    endActions = { ForwardIcon() }, enabled = !state.busy,
+                    onClick = { onOpenModule(module.id) })
+            }
+        }
+        if (state.busy) item {
+            Card(Modifier.fillMaxWidth()) { BasicComponent(title = "正在处理…", summary = "请稍候") }
+        }
+    }
+}
+
+@Composable
+private fun ModuleDetailPage(state: BridgeUiState, module: ModuleInfo,
+    onOpenSettings: () -> Unit, onUpdate: () -> Unit, onUninstall: () -> Unit,
+    onPickTarget: () -> Unit, onRestore: () -> Unit, onOpenRearSettings: () -> Unit,
+    onConfirmReapplied: () -> Unit) {
+    val resources = state.carrierResources
+    val ready = state.shizuku.status == ShizukuStatus.READY
+    val boundCard = state.cards.firstOrNull { it.id == module.boundCardId }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                BasicComponent(title = module.name, summary = "${module.version} · ${module.author}",
+                    startAction = { Icon(MiuixIcons.GridView, contentDescription = null, modifier = Modifier.size(40.dp)) })
+                if (module.description.isNotBlank()) BasicComponent(title = "介绍", summary = module.description)
+                BasicComponent(title = "使用能力", summary = module.capabilities.joinToString("、") {
+                    when (it) { "network" -> "联网"; "storage" -> "存储"; "files" -> "文件"; else -> it }
+                }.ifBlank { "无额外能力" })
+            }
+        }
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                if (module.hasWebui) BasicComponent(title = "模块设置", summary = "打开模块自带的设置网页",
+                    endActions = { ForwardIcon() }, onClick = onOpenSettings, enabled = !state.busy)
+                if (module.source?.contains('@') == true) BasicComponent(title = "检查更新", summary = module.source,
+                    endActions = { ForwardIcon() }, onClick = onUpdate, enabled = !state.busy)
+                BasicComponent(title = "卸载模块", summary = "删除模块及其数据",
+                    endActions = { ForwardIcon() }, onClick = onUninstall, enabled = !state.busy)
+            }
+        }
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                BasicComponent(title = "替换目标", summary = module.boundCardTitle ?: "尚未选择",
+                    startAction = boundCard?.preview?.let { bitmap -> {
+                        Image(bitmap.asImageBitmap(), boundCard.title, Modifier.size(56.dp))
+                    } })
+                if (module.boundCardId == null) {
+                    BasicComponent(title = "选择替换目标", summary = "预设卡片和自行生成的卡片均可使用",
+                        endActions = { ForwardIcon() }, onClick = onPickTarget, enabled = !state.busy)
+                } else {
+                    if (resources != null) BasicComponent(title = "载体状态", summary = resources.message)
+                    BasicComponent(title = "更新载体资源", summary = "写入当前模块的最新载体包",
+                        endActions = { ForwardIcon() }, onClick = onPickTarget, enabled = !state.busy)
+                    BasicComponent(title = "恢复原始资源", summary = "恢复后可以选择其他替换目标",
+                        endActions = { ForwardIcon() }, onClick = onRestore,
+                        enabled = !state.busy && ready && boundCard?.hasBackup == true)
+                }
+            }
+        }
+        if (resources?.state == CarrierResourceState.REAPPLY_REQUIRED) item {
+            Card(Modifier.fillMaxWidth()) {
+                BasicComponent(title = "最后一步：重新应用", summary = "请到背屏设置中移除旧卡，再从原入口重新应用。")
+                BasicComponent(title = "打开背屏设置", endActions = { ForwardIcon() },
+                    onClick = onOpenRearSettings, enabled = !state.busy)
+                BasicComponent(title = "我已重新应用", summary = "记录你的手动确认", endActions = { ForwardIcon() },
+                    onClick = onConfirmReapplied, enabled = !state.busy)
+            }
+        }
+    }
+}
+
+@Composable
+private fun TargetPickerPage(state: BridgeUiState, ready: Boolean,
+    onSelectCard: (String) -> Unit, onWrite: () -> Unit) {
+    val selected = state.cards.firstOrNull { it.id == state.selectedCardId }
+    val occupied = state.groups.filter { it.id != state.activeGroupId }.mapNotNull { it.cardId }.toSet()
+    val changingBound = state.boundCardId != null
+    Column(Modifier.fillMaxSize()) {
+        LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (!ready || state.cards.isEmpty()) item {
+                Card(Modifier.fillMaxWidth()) {
+                    BasicComponent(title = if (ready) "没有本地卡片资源" else "需要 Shizuku 授权",
+                        summary = if (ready) "先在系统中添加一张卡片，再刷新列表。" else "请返回「设置与关于」完成授权。")
+                }
+            }
+            items(state.cards, key = { it.id }) { card ->
+                val taken = card.id in occupied
+                val selectable = ready && card.canReplace && !taken &&
+                    (!changingBound || card.id == state.boundCardId)
+                Card(Modifier.fillMaxWidth()) {
+                    BasicComponent(title = card.title,
+                        summary = when {
+                            taken -> "已被其他模块占用"
+                            !card.canReplace -> "只读资源"
+                            changingBound && card.id != state.boundCardId -> "先恢复当前目标，才能更换"
+                            else -> if (card.hasBackup) "可替换 · 已有原始备份" else "可替换 · 写入前自动备份"
+                        },
+                        startAction = card.preview?.let { bitmap -> {
+                            Image(bitmap.asImageBitmap(), card.title, Modifier.size(56.dp))
+                        } },
+                        endActions = { RadioButton(selected = card.id == state.selectedCardId, onClick = null) },
+                        onClick = { onSelectCard(card.id) }, role = Role.RadioButton,
+                        enabled = selectable && !state.busy)
+                }
+            }
+        }
+        Button(onClick = onWrite,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 16.dp),
+            colors = ButtonDefaults.buttonColorsPrimary(),
+            enabled = ready && !state.busy && selected?.canReplace == true && selected.id !in occupied &&
+                (!changingBound || selected.id == state.boundCardId)) {
+            Text("写入并绑定", maxLines = 1)
+        }
+    }
+}
+
+@Composable
+private fun SettingsPage(state: BridgeUiState, onAuthorize: () -> Unit, onRefresh: () -> Unit) {
+    val context = LocalContext.current
+    val ready = state.shizuku.status == ShizukuStatus.READY
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                BasicComponent(title = "Shizuku", summary = when (state.shizuku.status) {
+                    ShizukuStatus.NOT_RUNNING -> "未运行，请先启动 Shizuku"
+                    ShizukuStatus.AUTH_REQUIRED -> "未授权，替换载体需要授权"
+                    ShizukuStatus.CONNECTING -> "正在连接…"
+                    ShizukuStatus.READY -> "已连接 · ${state.cards.size} 个本地卡片资源"
+                    ShizukuStatus.ERROR -> state.shizuku.message.ifBlank { "连接失败" }
+                })
+                BasicComponent(title = if (ready) "刷新替换目标" else "授权与连接",
+                    summary = if (ready) "重新扫描预设及自行生成的本地卡片" else "只有写入和恢复载体需要 Shizuku",
+                    endActions = { ForwardIcon() }, onClick = if (ready) onRefresh else onAuthorize,
+                    enabled = !state.busy)
+            }
+        }
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                BasicComponent(title = "背屏卡片桥", summary = "${BuildConfig.VERSION_NAME}${if (BuildConfig.DEBUG) " · 独立测试版" else ""}")
+                BasicComponent(title = "作者", summary = "finall1008", endActions = { ForwardIcon() },
+                    onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/finall1008"))) })
+                BasicComponent(title = "项目仓库", summary = "finall1008/rear-card-bridge", endActions = { ForwardIcon() },
+                    onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/finall1008/rear-card-bridge"))) })
+            }
+        }
+    }
+}
+
+@Composable
+private fun ForwardIcon() {
+    Icon(MiuixIcons.ChevronForward, contentDescription = null, modifier = Modifier.size(20.dp))
 }
