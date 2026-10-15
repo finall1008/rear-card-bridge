@@ -6,15 +6,23 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.input.rememberTextFieldState
+import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.toggleableState
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import dev.finall.rearcardbridge.BuildConfig
 import dev.finall.rearcardbridge.live.CarrierResourceState
 import dev.finall.rearcardbridge.model.BridgeUiState
@@ -32,6 +40,8 @@ import top.yukonga.miuix.kmp.nav.core.rememberNavController
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.ThemeController
 import top.yukonga.miuix.kmp.window.WindowDialog
+import java.text.DateFormat
+import java.util.Date
 
 @Composable
 fun BridgeScreen(
@@ -50,6 +60,7 @@ fun BridgeScreen(
     onUninstallModule: (String) -> Unit,
     onUpdateModule: (String) -> Unit,
     onToggleBackgroundRefresh: () -> Unit,
+    onSetBackgroundRefreshInterval: (String, Int) -> Unit,
 ) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     val nav = rememberNavController<BridgeRoute>(BridgeRoute.Root)
@@ -102,9 +113,17 @@ fun BridgeScreen(
                         }
                     },
                 ) { padding ->
-                    Box(Modifier.fillMaxSize().padding(padding)) {
-                        if (tab == 1) SettingsPage(state, onAuthorize, onRefresh, onToggleBackgroundRefresh)
-                        else ModuleListPage(state, onInstallModuleZip,
+                    val layoutDirection = LocalLayoutDirection.current
+                    // The navigation bar overlays the list; only its scrollable tail reserves space.
+                    val listPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp,
+                        bottom = padding.calculateBottomPadding() + 16.dp)
+                    Box(Modifier.fillMaxSize().padding(
+                        start = padding.calculateStartPadding(layoutDirection),
+                        top = padding.calculateTopPadding(),
+                        end = padding.calculateEndPadding(layoutDirection))) {
+                        if (tab == 1) SettingsPage(state, onAuthorize, onRefresh, onToggleBackgroundRefresh,
+                            contentPadding = listPadding)
+                        else ModuleListPage(state, onInstallModuleZip, contentPadding = listPadding,
                             onInstallGit = { showGit = true }, onOpenModule = { id ->
                                 nav.push(BridgeRoute.ModuleDetail(id))
                             })
@@ -122,7 +141,8 @@ fun BridgeScreen(
                         onPickTarget = { nav.push(BridgeRoute.Targets(route.moduleId)) },
                         onRestore = { confirmRestore = true },
                         onOpenRearSettings = { onOpenRearSettings(detail.boundCardId) },
-                        onConfirmReapplied = onConfirmReapplied)
+                        onConfirmReapplied = onConfirmReapplied,
+                        onSetBackgroundRefreshInterval = onSetBackgroundRefreshInterval)
                 }
             }
             entry<BridgeRoute.Targets> { route ->
@@ -210,8 +230,8 @@ private fun ModuleLoadingPage() {
 
 @Composable
 private fun ModuleListPage(state: BridgeUiState, onInstallZip: () -> Unit,
-    onInstallGit: () -> Unit, onOpenModule: (String) -> Unit) {
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp),
+    onInstallGit: () -> Unit, onOpenModule: (String) -> Unit, contentPadding: PaddingValues) {
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = contentPadding,
         verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -251,10 +271,16 @@ private fun ModuleListPage(state: BridgeUiState, onInstallZip: () -> Unit,
 private fun ModuleDetailPage(state: BridgeUiState, module: ModuleInfo,
     onOpenSettings: () -> Unit, onUpdate: () -> Unit, onUninstall: () -> Unit,
     onPickTarget: () -> Unit, onRestore: () -> Unit, onOpenRearSettings: () -> Unit,
-    onConfirmReapplied: () -> Unit) {
+    onConfirmReapplied: () -> Unit, onSetBackgroundRefreshInterval: (String, Int) -> Unit) {
     val resources = state.carrierResources
     val ready = state.shizuku.status == ShizukuStatus.READY
     val boundCard = state.cards.firstOrNull { it.id == module.boundCardId }
+    val intervalMinutes = module.backgroundIntervalMinutes
+    var showIntervalDialog by remember { mutableStateOf(false) }
+    val intervalField = rememberTextFieldState()
+    val rawInterval = intervalField.text.toString().trim()
+    val parsedInterval = rawInterval.toIntOrNull()
+    val intervalValid = parsedInterval != null && parsedInterval >= 5
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item {
@@ -265,9 +291,31 @@ private fun ModuleDetailPage(state: BridgeUiState, module: ModuleInfo,
                 BasicComponent(title = "使用能力", summary = module.capabilities.joinToString("、") {
                     when (it) { "network" -> "联网"; "storage" -> "存储"; "files" -> "文件"; else -> it }
                 }.ifBlank { "无额外能力" })
-                BasicComponent(title = "后台刷新", summary = module.backgroundIntervalMinutes?.let {
-                    "每 $it 分钟更新快照；在「设置与关于」统一开启"
-                } ?: "模块未提供后台刷新入口")
+                if (intervalMinutes == null) {
+                    BasicComponent(title = "后台刷新", summary = "模块未提供后台刷新入口")
+                } else {
+                    BasicComponent(title = "刷新间隔", summary = "每 $intervalMinutes 分钟 · 点按修改（最短 5 分钟）",
+                        endActions = { ForwardIcon() }, enabled = !state.busy, onClick = {
+                            intervalField.setTextAndPlaceCursorAtEnd(intervalMinutes.toString())
+                            showIntervalDialog = true
+                        })
+                    if (state.backgroundRefreshEnabled) {
+                        val now = System.currentTimeMillis()
+                        BasicComponent(title = "上次刷新", summary = module.backgroundLastRefreshAt?.let {
+                            "上次成功：${formatRefreshTime(it)}"
+                        } ?: "尚未完成首次刷新")
+                        BasicComponent(title = "下次计划", summary = when {
+                            module.backgroundNextRefreshAt == null -> "等待首次刷新"
+                            module.backgroundNextRefreshAt <= now -> "已到期，等待系统安排"
+                            else -> formatRefreshTime(module.backgroundNextRefreshAt)
+                        })
+                    } else {
+                        BasicComponent(title = "刷新状态", summary = "后台刷新未开启")
+                    }
+                    if (!module.backgroundRefreshError.isNullOrBlank()) {
+                        BasicComponent(title = "最近失败", summary = module.backgroundRefreshError)
+                    }
+                }
             }
         }
         item {
@@ -309,7 +357,32 @@ private fun ModuleDetailPage(state: BridgeUiState, module: ModuleInfo,
             }
         }
     }
+    WindowDialog(show = showIntervalDialog, title = "后台刷新间隔",
+        summary = "单位为分钟，最短 5 分钟。由系统的延迟任务安排执行，省电模式下可能延迟。",
+        onDismissRequest = { showIntervalDialog = false }) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            TextField(state = intervalField, label = "间隔（分钟）", useLabelAsPlaceholder = true,
+                enabled = !state.busy,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+            if (rawInterval.isNotEmpty() && !intervalValid) {
+                Text(text = if (parsedInterval == null) "请输入整数分钟" else "最短 5 分钟",
+                    fontSize = 12.sp, lineHeight = 18.sp,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Button(onClick = { showIntervalDialog = false }, modifier = Modifier.weight(1f)) { Text("取消") }
+                Button(onClick = {
+                    showIntervalDialog = false
+                    parsedInterval?.let { onSetBackgroundRefreshInterval(module.id, it) }
+                }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColorsPrimary(),
+                    enabled = intervalValid && !state.busy) { Text("保存") }
+            }
+        }
+    }
 }
+
+private fun formatRefreshTime(epochMillis: Long): String =
+    DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(epochMillis))
 
 @Composable
 private fun TargetPickerPage(state: BridgeUiState, ready: Boolean,
@@ -359,10 +432,10 @@ private fun TargetPickerPage(state: BridgeUiState, ready: Boolean,
 
 @Composable
 private fun SettingsPage(state: BridgeUiState, onAuthorize: () -> Unit, onRefresh: () -> Unit,
-    onToggleBackgroundRefresh: () -> Unit) {
+    onToggleBackgroundRefresh: () -> Unit, contentPadding: PaddingValues) {
     val context = LocalContext.current
     val ready = state.shizuku.status == ShizukuStatus.READY
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp),
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = contentPadding,
         verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item {
             Card(Modifier.fillMaxWidth()) {
@@ -380,12 +453,25 @@ private fun SettingsPage(state: BridgeUiState, onAuthorize: () -> Unit, onRefres
             }
         }
         item {
-            Card(Modifier.fillMaxWidth()) {
-                BasicComponent(title = "后台刷新", summary = state.backgroundRefreshMessage)
-                BasicComponent(title = if (state.backgroundRefreshRunning) "停止后台刷新" else "开启后台刷新",
-                    summary = "${state.modules.count { it.backgroundIntervalMinutes != null }} 个模块提供后台入口；按各自周期更新快照，不唤醒背屏。",
-                    endActions = { ForwardIcon() }, onClick = onToggleBackgroundRefresh)
-                BasicComponent(title = "系统限制", summary = "需允许通知。省电模式可能延迟执行；Android 15 后台同步在 24 小时内累计限 6 小时，到限停止，回到应用后可手动开启。")
+            Column {
+                Card(Modifier.fillMaxWidth()) {
+                    BasicComponent(title = "后台刷新", summary = state.backgroundRefreshMessage,
+                        modifier = Modifier.semantics {
+                            toggleableState = ToggleableState(state.backgroundRefreshEnabled)
+                        },
+                        endActions = {
+                            Switch(checked = state.backgroundRefreshEnabled, onCheckedChange = null)
+                        },
+                        onClick = onToggleBackgroundRefresh, role = Role.Switch)
+                }
+                Text(
+                    text = "${state.modules.count { it.backgroundIntervalMinutes != null }} 个模块支持后台刷新，由系统的延迟任务按各自周期更新快照，不会唤醒背屏。" +
+                        "各模块最短间隔 5 分钟，可在模块详情中调整；省电模式等系统调度可能延迟实际执行。开关设置会保留。",
+                    modifier = Modifier.padding(horizontal = 16.dp).padding(top = 10.dp),
+                    fontSize = 12.sp,
+                    lineHeight = 18.sp,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                )
             }
         }
         item {

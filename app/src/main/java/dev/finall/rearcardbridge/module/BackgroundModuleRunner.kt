@@ -32,7 +32,7 @@ import org.json.JSONObject
  * The whole task (load + scripts + refresh) is bounded by [RUN_TIMEOUT_MILLIS]; when it
  * ends — success, script error, timeout, renderer death or service stop — pending bridge
  * callbacks are dropped and the WebView destroyed, so a stopped scheduler cannot keep
- * saving snapshots. Periodic scheduling stays in [BackgroundRefreshService]; the page
+ * saving snapshots. Periodic scheduling stays in [BackgroundRefreshScheduler]; the page
  * must not (and effectively cannot) rely on JS timers across tasks.
  *
  * Script text is injected with evaluateJavascript on a blank page, never inside HTML,
@@ -66,7 +66,7 @@ class BackgroundModuleRunner(context: Context) {
         try {
             withTimeout(RUN_TIMEOUT_MILLIS) { execute(module, scripts) }
         } catch (error: TimeoutCancellationException) {
-            // The service loop treats CancellationException as a stop signal; a timeout is a failure.
+            // Job cancellation is a stop signal; a module's own timeout is a failed attempt.
             throw IllegalStateException("后台刷新超过 ${RUN_TIMEOUT_MILLIS / 1000} 秒未完成，已取消本次执行。")
         }
     }

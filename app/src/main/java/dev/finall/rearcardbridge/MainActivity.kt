@@ -1,9 +1,5 @@
 package dev.finall.rearcardbridge
 
-import android.Manifest
-import android.app.NotificationManager
-import android.content.pm.PackageManager
-import dev.finall.rearcardbridge.module.BackgroundRefreshService
 import android.app.Activity
 import android.content.Intent
 import android.net.Uri
@@ -22,33 +18,6 @@ class MainActivity : ComponentActivity() {
     private var requestId: String? = null
     private val pickModule = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { viewModel.installModuleZip(it) }
-    }
-
-    private val requestNotifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) startBackgroundRefresh()
-        else viewModel.rejectInput("后台刷新需要通知权限，以显示运行状态和停止入口。")
-    }
-
-    private fun toggleBackgroundRefresh() {
-        if (BackgroundRefreshService.state.value.running) {
-            stopService(Intent(this, BackgroundRefreshService::class.java))
-        } else if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            requestNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
-        } else {
-            startBackgroundRefresh()
-        }
-    }
-
-    private fun startBackgroundRefresh() {
-        if (!getSystemService(NotificationManager::class.java).areNotificationsEnabled()) {
-            viewModel.rejectInput("请先在系统设置中允许卡片桥发送通知。")
-            return
-        }
-        try {
-            startForegroundService(Intent(this, BackgroundRefreshService::class.java))
-        } catch (error: Exception) {
-            viewModel.rejectInput("无法启动后台刷新：${error.message}")
-        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -76,7 +45,8 @@ class MainActivity : ComponentActivity() {
                 onSelectModule = viewModel::selectModule,
                 onUninstallModule = viewModel::uninstallModule,
                 onUpdateModule = viewModel::updateModule,
-                onToggleBackgroundRefresh = ::toggleBackgroundRefresh)
+                onToggleBackgroundRefresh = viewModel::toggleBackgroundRefresh,
+                onSetBackgroundRefreshInterval = viewModel::setBackgroundRefreshInterval)
         }
         if (savedInstanceState == null) handleIntent(intent)
     }

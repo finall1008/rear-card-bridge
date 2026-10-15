@@ -12,7 +12,7 @@ import dev.finall.rearcardbridge.model.BridgeUiState
 import dev.finall.rearcardbridge.model.ModuleInfo
 import dev.finall.rearcardbridge.model.OperationResult
 import dev.finall.rearcardbridge.model.ShizukuStatus
-import dev.finall.rearcardbridge.module.BackgroundRefreshService
+import dev.finall.rearcardbridge.module.BackgroundRefreshScheduler
 import dev.finall.rearcardbridge.module.GitInstall
 import dev.finall.rearcardbridge.module.ModuleInstaller
 import dev.finall.rearcardbridge.module.ModuleStore
@@ -43,6 +43,7 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
     var onOpenRearSettingsRequested: ((String?) -> OperationResult)? = null
 
     init {
+        BackgroundRefreshScheduler.restorePreference(application)
         application.getExternalFilesDir(null)
         runOperation(queue = true) { refreshModules() }
         viewModelScope.launch {
@@ -54,9 +55,11 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
             }
         }
         viewModelScope.launch {
-            BackgroundRefreshService.state.collect { refresh ->
-                mutableState.update { it.copy(backgroundRefreshRunning = refresh.running,
-                    backgroundRefreshMessage = refresh.message) }
+            BackgroundRefreshScheduler.state.collect { refresh ->
+                mutableState.update { it.copy(backgroundRefreshEnabled = refresh.enabled,
+                    backgroundRefreshRunning = refresh.running,
+                    backgroundRefreshMessage = refresh.message,
+                    modules = it.modules.map(::withBackgroundSchedule)) }
             }
         }
         client.connect()
@@ -113,8 +116,31 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
                 author = manifest.author, capabilities = manifest.capabilities,
                 hasWebui = manifest.hasWebui, source = installed.source,
                 groupId = group?.id, boundCardId = group?.cardId, boundCardTitle = group?.cardTitle,
-                backgroundIntervalMinutes = manifest.backgroundIntervalMinutes)
+                backgroundIntervalMinutes = manifest.backgroundIntervalMinutes).let(::withBackgroundSchedule)
         }) }
+        BackgroundRefreshScheduler.schedule(getApplication(), modules)
+    }
+
+    private fun withBackgroundSchedule(module: ModuleInfo): ModuleInfo {
+        val minutes = module.backgroundIntervalMinutes ?: return module
+        val schedule = BackgroundRefreshScheduler.scheduleFor(getApplication(), module.id, minutes)
+        return module.copy(backgroundIntervalMinutes = schedule.intervalMinutes,
+            backgroundLastRefreshAt = schedule.lastRefreshAt,
+            backgroundNextRefreshAt = schedule.nextAttemptAt.takeIf { it != 0L },
+            backgroundRefreshError = schedule.error)
+    }
+
+    fun toggleBackgroundRefresh() = runOperation {
+        val application = getApplication<Application>()
+        BackgroundRefreshScheduler.setEnabled(application, !BackgroundRefreshScheduler.isEnabled(application))
+        refreshModules()
+    }
+
+    fun setBackgroundRefreshInterval(id: String, minutes: Int) = runOperation {
+        val module = withContext(Dispatchers.IO) { moduleStore.get(id) } ?: error("模块尚未安装。")
+        requireNotNull(module.manifest.backgroundIntervalMinutes) { "模块未提供后台刷新入口。" }
+        BackgroundRefreshScheduler.setInterval(getApplication(), id, minutes)
+        refreshModules()
     }
 
     fun installModuleZip(uri: Uri) = runOperation(queue = true) {
@@ -218,6 +244,7 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
                 moduleStore.remove(id)
             }
         }
+        BackgroundRefreshScheduler.removeModule(getApplication(), id)
         refreshModules()
         if (state.value.activeModuleId == id) {
             mutableState.update { it.copy(activeModuleId = null) }
