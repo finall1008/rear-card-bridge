@@ -8,6 +8,12 @@ Android / Kotlin，界面使用 Miuix Compose 0.9.4。一个模块 ZIP 包含背
 - [Canvas 绘制、触摸与生命周期](<docs/app-card-development.md>)
 - [示例模块](<samples/hello-module/>)
 
+## 视频教程
+
+[▶ 在 B 站观看：背屏卡片桥使用教程](https://www.bilibili.com/video/BV12vJ962Evg/)
+
+以「AI 用量背屏」为例，演示 Shizuku 授权、模块安装、下载新载体、刷新并绑定、模块设置，以及背屏查看效果。
+
 ## 使用流程
 
 1. 在「设置与关于」启动/连接 Shizuku 并授权。
