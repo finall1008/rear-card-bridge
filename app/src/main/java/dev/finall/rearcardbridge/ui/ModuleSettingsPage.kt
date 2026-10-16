@@ -356,6 +356,12 @@ private class PopupController(
             child.destroy()
             return false
         }
+        // Passport uses percentage-height containers; give the popup a fixed viewport
+        // instead of AndroidView's default wrap-content sizing.
+        child.layoutParams = ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT,
+        )
         child.settings.javaScriptEnabled = true
         child.settings.domStorageEnabled = true
         // Assert third-party-cookie acceptance explicitly: cross-site logins commonly keep
