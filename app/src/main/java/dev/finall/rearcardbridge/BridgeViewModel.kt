@@ -20,6 +20,8 @@ import dev.finall.rearcardbridge.module.ModuleStore
 import dev.finall.rearcardbridge.module.ModuleWebProfiles
 import dev.finall.rearcardbridge.packageio.CardPackageBuilder
 import dev.finall.rearcardbridge.shizuku.ShizukuCardClient
+import dev.finall.rearcardbridge.store.CatalogModule
+import dev.finall.rearcardbridge.store.ModuleCatalogRepository
 import java.io.File
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -157,6 +159,35 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
             installPreparedModule(file, source = "zip")
         } finally {
             if (pendingModuleInstall?.file != file) file.delete()
+        }
+    }
+
+    fun refreshShop() {
+        if (state.value.shop.loading) return
+        viewModelScope.launch {
+            mutableState.update { it.copy(shop = it.shop.copy(loading = true, error = null)) }
+            try {
+                val modules = withContext(Dispatchers.IO) { ModuleCatalogRepository.load() }
+                mutableState.update { it.copy(shop = it.shop.copy(modules = modules, loaded = true)) }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                mutableState.update { it.copy(shop = it.shop.copy(error = error.message ?: "商店加载失败")) }
+            } finally {
+                mutableState.update { it.copy(shop = it.shop.copy(loading = false)) }
+            }
+        }
+    }
+
+    fun installShopModule(module: CatalogModule) = runOperation {
+        val file = File.createTempFile("module-shop-", ".zip", getApplication<Application>().cacheDir)
+        mutableState.update { it.copy(shop = it.shop.copy(installingModuleId = module.id)) }
+        try {
+            withContext(Dispatchers.IO) { ModuleCatalogRepository.download(module, file) }
+            installPreparedModule(file, source = "zip")
+        } finally {
+            if (pendingModuleInstall?.file != file) file.delete()
+            mutableState.update { it.copy(shop = it.shop.copy(installingModuleId = null)) }
         }
     }
 

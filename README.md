@@ -2,21 +2,23 @@
 
 Android / Kotlin，界面使用 Miuix Compose 0.9.4。一个模块 ZIP 包含背屏卡片资源和可选的设置网页；卡片通过统一 `bridge` API 联网、读写自己的数据，不再需要每张卡片配一个 Android App。
 
+- [模块商店](https://finall1008.github.io/rear-card-modules/)
 - [模块格式与基础 API](<docs/module-development.md>)
+- [模块商店上架与更新](<docs/module-shop.md>)
 - [Canvas 绘制、触摸与生命周期](<docs/app-card-development.md>)
 - [示例模块](<samples/hello-module/>)
 
 ## 使用流程
 
 1. 在「设置与关于」启动/连接 Shizuku 并授权。
-2. 在「主页」导入模块 ZIP，或从公开 Git 仓库安装。
+2. 在「商店」浏览、搜索并安装模块，也可在「主页」导入模块 ZIP 或从公开 Git 仓库安装。
 3. 安装后选择实际扫描出的本地卡片作为替换目标。
 4. 确认写入：应用先备份目标原始资源，再写入模块载体。
 5. 到系统背屏设置移除旧卡，再从该卡片的原入口重新应用。
 
 预设卡片和自行生成的卡片均可作为目标，前提是对应资源已经下载到本机且可写；不会注册新系统卡片，也不会模拟点击应用按钮。更换目标前须恢复原始资源，解除原绑定。
 
-主页只有模块安装和模块列表。点击模块可打开其设置网页、查看载体状态、更新资源或卸载；Shizuku 状态、作者和仓库信息统一放在「设置与关于」。
+底部导航依次为「主页」「商店」「设置与关于」。商店使用原生 Compose 界面，读取 [GitHub Pages 模块目录](https://finall1008.github.io/rear-card-modules/modules.json)，从 GitHub Releases 下载对应版本 ZIP；预览图由模块仓库提供，支持左右滑动多图及点击全屏查看；已安装模块可在商店打开详情或更新。主页保留本地导入、仓库安装和已安装模块列表。点击模块可打开其设置网页、查看载体状态、更新资源或卸载；Shizuku 状态、作者和仓库信息统一放在「设置与关于」。
 
 ## 模块包
 
@@ -116,14 +118,9 @@ try {
 
 已绑定模块更新还返回 `carrier_resource_status`（`UNKNOWN`、`CURRENT`、`UPDATE_REQUIRED`、`REAPPLY_REQUIRED`），以及已知时的静态资源变化数量。后台不会代替用户重新应用。
 
-## 独立 Debug 版
+## Debug 与 Release
 
-- Release：`dev.finall.rearcardbridge`
-- Debug：`dev.finall.rearcardbridge.debug`，名称「背屏卡片桥 Debug」
-
-两个版本的私有数据、Provider authority 和备份目录分开。外部 App 测试 Debug 时，目标包名和 Provider authority 都需换成 Debug 包名；Intent action 仍是同一协议名称。
-
-**本机系统卡片资源是共享的**：请给 Debug 选择专用测试目标，不要覆盖 release 正在使用的卡片。两个版本不会互相识别对方的绑定。
+Debug 和 Release 均使用包名 `dev.finall.rearcardbridge` 和相同签名，相互覆盖安装并保留原应用数据，不再使用独立的 `.debug` 包名。外部 App 的目标包名和 Provider authority 无需因构建类型切换；Debug 版本名带 `-debug` 后缀。
 
 ## 备份与构建
 

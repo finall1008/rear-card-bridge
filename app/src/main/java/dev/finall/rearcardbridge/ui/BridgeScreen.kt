@@ -28,6 +28,7 @@ import dev.finall.rearcardbridge.live.CarrierResourceState
 import dev.finall.rearcardbridge.model.BridgeUiState
 import dev.finall.rearcardbridge.model.ModuleInfo
 import dev.finall.rearcardbridge.model.ShizukuStatus
+import dev.finall.rearcardbridge.store.CatalogModule
 import top.yukonga.miuix.kmp.basic.*
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Back
@@ -35,6 +36,7 @@ import top.yukonga.miuix.kmp.icon.extended.ChevronForward
 import top.yukonga.miuix.kmp.icon.extended.GridView
 import top.yukonga.miuix.kmp.icon.extended.Home
 import top.yukonga.miuix.kmp.icon.extended.Settings
+import top.yukonga.miuix.kmp.icon.extended.Store
 import top.yukonga.miuix.kmp.nav.core.NavDisplay
 import top.yukonga.miuix.kmp.nav.core.rememberNavController
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -56,6 +58,8 @@ fun BridgeScreen(
     onConfirmReapplied: () -> Unit,
     onInstallModuleZip: () -> Unit,
     onInstallModuleGit: (String, String?) -> Unit,
+    onRefreshShop: () -> Unit,
+    onInstallShopModule: (CatalogModule) -> Unit,
     onConfirmModuleDowngrade: () -> Unit,
     onDismissModuleDowngrade: () -> Unit,
     onSelectModule: (String) -> Unit,
@@ -81,6 +85,9 @@ fun BridgeScreen(
     val module = state.modules.firstOrNull { it.id == moduleId }
     val ready = state.shizuku.status == ShizukuStatus.READY
 
+    LaunchedEffect(tab) {
+        if (tab == 1 && !state.shop.loaded && !state.shop.loading) onRefreshShop()
+    }
     LaunchedEffect(state.moduleInstallEvent) {
         if (state.moduleInstallEvent > handledInstall) {
             handledInstall = state.moduleInstallEvent
@@ -105,13 +112,19 @@ fun BridgeScreen(
         NavDisplay(navController = nav, modifier = Modifier.fillMaxSize()) {
             entry<BridgeRoute.Root> {
                 Scaffold(
-                    topBar = { TopAppBar(title = if (tab == 1) "设置与关于" else "背屏卡片桥") },
+                    topBar = { TopAppBar(title = when (tab) {
+                        1 -> "模块商店"
+                        2 -> "设置与关于"
+                        else -> "背屏卡片桥"
+                    }) },
                     bottomBar = {
                         FloatingNavigationBar {
                             FloatingNavigationBarItem(selected = tab == 0,
                                 onClick = { tab = 0 }, icon = MiuixIcons.Home, label = "主页")
                             FloatingNavigationBarItem(selected = tab == 1,
-                                onClick = { tab = 1 }, icon = MiuixIcons.Settings, label = "设置与关于")
+                                onClick = { tab = 1 }, icon = MiuixIcons.Store, label = "商店")
+                            FloatingNavigationBarItem(selected = tab == 2,
+                                onClick = { tab = 2 }, icon = MiuixIcons.Settings, label = "设置与关于")
                         }
                     },
                 ) { padding ->
@@ -123,12 +136,21 @@ fun BridgeScreen(
                         start = padding.calculateStartPadding(layoutDirection),
                         top = padding.calculateTopPadding(),
                         end = padding.calculateEndPadding(layoutDirection))) {
-                        if (tab == 1) SettingsPage(state, onAuthorize, onRefresh, onToggleBackgroundRefresh,
-                            contentPadding = listPadding)
-                        else ModuleListPage(state, onInstallModuleZip, contentPadding = listPadding,
-                            onInstallGit = { showGit = true }, onOpenModule = { id ->
-                                nav.push(BridgeRoute.ModuleDetail(id))
-                            })
+                        when (tab) {
+                            1 -> ModuleShopPage(shop = state.shop, installedModules = state.modules,
+                                modulesLoaded = state.modulesLoaded, busy = state.busy,
+                                onRefresh = onRefreshShop, onInstall = onInstallShopModule,
+                                onOpenModule = { id ->
+                                    tab = 0
+                                    nav.push(BridgeRoute.ModuleDetail(id))
+                                }, contentPadding = listPadding)
+                            2 -> SettingsPage(state, onAuthorize, onRefresh, onToggleBackgroundRefresh,
+                                contentPadding = listPadding)
+                            else -> ModuleListPage(state, onInstallModuleZip, contentPadding = listPadding,
+                                onInstallGit = { showGit = true }, onOpenModule = { id ->
+                                    nav.push(BridgeRoute.ModuleDetail(id))
+                                })
+                        }
                     }
                 }
             }

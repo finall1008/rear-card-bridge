@@ -283,7 +283,11 @@ node bin/card-build.js <模块源目录> <输出.zip>
 
 仓库根目录放 module.json 与 card/、webroot/。用户输入仓库地址即可安装；支持 GitHub / GitLab / Gitee 公开仓库，可指定分支（地址里的 `/tree/<branch>` 或单独填写，默认 main）。仓库里的 card/ 脚本也必须是用 `tools/card-build` 编译后的纯 JS 再推送——手机上不执行构建；设置网页必须是构建产物，手机上不执行构建。
 
-同一 id 再次安装即更新；versionCode 不增大会被拒绝。更新保留配置与业务数据，替换包内容。
+同一 id 再次安装即覆盖；同版本可直接安装，低版本需要用户确认降级。覆盖安装保留配置与业务数据，替换包内容。
+
+### 商店上架
+
+将构建好的模块 ZIP 发布到自己的 GitHub Releases，再向[商店仓库](https://github.com/finall1008/rear-card-modules)提交目录条目。完整操作、字段示例、多图预览和版本更新规则见[模块商店上架与更新](<module-shop.md>)。用户可从[网页商店](https://finall1008.github.io/rear-card-modules/)浏览，或在 App「商店」直接安装、更新。
 
 ## 7. 最小示例
 

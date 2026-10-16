@@ -57,6 +57,7 @@ data class BridgeUiState(
     val activeModuleId: String? = null,
     val moduleInstallEvent: Long = 0,
     val moduleDowngradeWarning: String? = null,
+    val shop: dev.finall.rearcardbridge.store.ModuleShopState = dev.finall.rearcardbridge.store.ModuleShopState(),
     val backgroundRefreshEnabled: Boolean = false,
     val backgroundRefreshRunning: Boolean = false,
     val backgroundRefreshMessage: String = "后台刷新未开启",

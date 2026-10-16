@@ -13,8 +13,8 @@ android {
         applicationId = "dev.finall.rearcardbridge"
         minSdk = 35
         targetSdk = 35
-        versionCode = 12
-        versionName = "1.1.1"
+        versionCode = 13
+        versionName = "1.2.0"
     }
     buildFeatures { compose = true; aidl = true; buildConfig = true }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_21; targetCompatibility = JavaVersion.VERSION_21 }
@@ -75,11 +75,8 @@ android {
             }
         }
     }
-    // The debug variant installs side by side with the release app; providers and
-    // module storage all follow BuildConfig.APPLICATION_ID, so nothing is shared.
     buildTypes {
         debug {
-            applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
         }
     }
@@ -88,6 +85,8 @@ kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarg
 dependencies {
     implementation("androidx.core:core-ktx:1.17.0")
     implementation("androidx.webkit:webkit:1.15.0")
+    implementation("io.coil-kt.coil3:coil-compose:3.3.0")
+    implementation("io.coil-kt.coil3:coil-network-okhttp:3.3.0")
     implementation("androidx.activity:activity-compose:1.12.4")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.10.0")

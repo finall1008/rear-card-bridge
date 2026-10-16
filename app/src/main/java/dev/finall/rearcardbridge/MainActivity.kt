@@ -42,6 +42,8 @@ class MainActivity : ComponentActivity() {
                 onConfirmReapplied = viewModel::confirmReapplied,
                 onInstallModuleZip = { pickModule.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream")) },
                 onInstallModuleGit = viewModel::installModuleGit,
+                onRefreshShop = viewModel::refreshShop,
+                onInstallShopModule = viewModel::installShopModule,
                 onConfirmModuleDowngrade = viewModel::confirmModuleDowngrade,
                 onDismissModuleDowngrade = viewModel::dismissModuleDowngrade,
                 onSelectModule = viewModel::selectModule,
