@@ -9,9 +9,12 @@ import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
+import android.webkit.ValueCallback
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -105,6 +108,23 @@ fun ModuleSettingsPage(moduleId: String, onBack: () -> Unit) {
     // true; the page then swaps to a comprehensible error instead of running unisolated.
     val profileError = remember { mutableStateOf<String?>(null) }
     val popup = remember { PopupController(context, moduleId) }
+    // File inputs inside the settings page arrive through WebChromeClient.onShowFileChooser.
+    val pendingFileCallback = remember { mutableStateOf<ValueCallback<Array<Uri>>?>(null) }
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        val callback = pendingFileCallback.value
+        pendingFileCallback.value = null
+        callback?.onReceiveValue(if (uri != null) arrayOf(uri) else null)
+    }
+    val chooseFile: (ValueCallback<Array<Uri>>, Array<String>) -> Unit = { callback, acceptTypes ->
+        pendingFileCallback.value?.onReceiveValue(null)
+        pendingFileCallback.value = callback
+        val mime = if (acceptTypes.any { it.startsWith("image/") }) "image/*"
+            else acceptTypes.firstOrNull { it.isNotBlank() } ?: "*/*"
+        runCatching { filePicker.launch(mime) }.onFailure {
+            pendingFileCallback.value = null
+            callback.onReceiveValue(null)
+        }
+    }
 
     // Popup only: while a popup is open, back walks the popup's own history first and closes
     // the popup at the start of that history. With no popup the callback is disabled and the
@@ -151,7 +171,7 @@ fun ModuleSettingsPage(moduleId: String, onBack: () -> Unit) {
                             webView.settings.setSupportMultipleWindows(true)
                             webView.settings.javaScriptCanOpenWindowsAutomatically = true
                             webView.webViewClient = webUiClient
-                            webView.webChromeClient = WebUiChromeClient(popup)
+                            webView.webChromeClient = WebUiChromeClient(popup, chooseFile)
                             webView.addJavascriptInterface(
                                 NativeBridge(moduleId, store, backend, scope) { webViewRef.value },
                                 BRIDGE_NAME,
@@ -166,6 +186,8 @@ fun ModuleSettingsPage(moduleId: String, onBack: () -> Unit) {
                     // Parent-page disposal must also take an open popup down with it.
                     onRelease = { released ->
                         if (webViewRef.value === released) webViewRef.value = null
+                        pendingFileCallback.value?.onReceiveValue(null)
+                        pendingFileCallback.value = null
                         released.destroy()
                         popup.close()
                     },
@@ -300,7 +322,19 @@ private class PopupWebViewClient : WebViewClient() {
 }
 
 /** Settings-side chrome client: window.open() becomes the module-profile popup. */
-private class WebUiChromeClient(private val popup: PopupController) : WebChromeClient() {
+private class WebUiChromeClient(
+    private val popup: PopupController,
+    private val chooseFile: (ValueCallback<Array<Uri>>, Array<String>) -> Unit,
+) : WebChromeClient() {
+    override fun onShowFileChooser(
+        view: WebView,
+        filePathCallback: ValueCallback<Array<Uri>>,
+        fileChooserParams: WebChromeClient.FileChooserParams,
+    ): Boolean {
+        chooseFile(filePathCallback, fileChooserParams.acceptTypes ?: emptyArray())
+        return true
+    }
+
     override fun onCreateWindow(
         view: WebView,
         isDialog: Boolean,
