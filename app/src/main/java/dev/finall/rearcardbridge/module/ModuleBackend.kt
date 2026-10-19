@@ -279,10 +279,11 @@ class ModuleBackend(
         }
 
         private const val MAX_VALUE_CHARS = 256 * 1024
-        // The existing maimai profile + image snapshot is ~352K characters. Keep it
-        // within the same 512K boundary as files.readText, rather than truncating it
-        // to the smaller generic key-value storage limit during background integration.
-        private const val MAX_SNAPSHOT_CHARS = 512 * 1024
+        // Measured on device: the carrier provider returns a 2M-character payload, but the
+        // rear host's JS runtime fails with "InternalError: out of memory" at 1M characters
+        // and still parses 900K. Cap at 800K to leave headroom for the script in the same
+        // payload. Larger values are rejected at save time instead of failing silently later.
+        private const val MAX_SNAPSHOT_CHARS = 800 * 1024
         private const val MAX_READ_CHARS = 512 * 1024
         private const val MAX_WRITE_CHARS = 1024 * 1024
         private const val MAX_BODY_BYTES = 1024 * 1024
