@@ -195,6 +195,7 @@ bridge.card.saveSnapshot({ profile, images });
 ```
 
 - 卡片端仍可**同步**读取和更新本地快照：`readSnapshot()` 读取本地缓存，`saveSnapshot()` 立即更新缓存，同时异步把同一份快照提交给桥；内容变化时可 await 返回的 Promise 等待桥保存完成。桥保存的是前台和后台共用的快照，不是另一份业务存储。
+- 主屏设置页也可调用 `await bridge.card.saveSnapshot(value)`：返回 Promise，成功后快照已写入桥，再调用 `await bridge.card.requestRefresh()` 通知背屏读取新数据。设置页不提供同步 `readSnapshot()`。
 - 背屏读取脚本的同一次载体数据查询会带回最新快照；运行时在执行模块脚本之前同步更新 `localStorage`，首帧无需等待额外的 JS 桥接请求。后台保存的新快照会在宿主下次实际读取载体数据时生效，不主动唤醒背屏。
 - 值必须能被 JSON 序列化，桥端单份快照限 512K 字符；图片请缩放后再转 Data URL。内容和已存快照相同时不会重复写入。
 - Data URL 图片可以放进快照，同步阶段设置的图片在常显中能正常显示；体积尽量按显示尺寸控制。

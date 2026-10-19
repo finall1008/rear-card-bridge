@@ -13,8 +13,8 @@ android {
         applicationId = "dev.finall.rearcardbridge"
         minSdk = 35
         targetSdk = 35
-        versionCode = 15
-        versionName = "1.2.2"
+        versionCode = 16
+        versionName = "1.2.3"
     }
     buildFeatures { compose = true; aidl = true; buildConfig = true }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_21; targetCompatibility = JavaVersion.VERSION_21 }

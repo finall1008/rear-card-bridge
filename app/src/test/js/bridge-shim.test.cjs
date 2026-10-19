@@ -81,6 +81,27 @@ test('WebUI exposes session networking without replacing browser network APIs', 
   assert.equal(h.requests.length, 1);
 });
 
+test('settings saveSnapshot waits for backend acceptance before refresh and propagates save errors', async () => {
+  const h = loadBridge();
+  const snapshot = { profile: { rating: 15158 }, images: {}, page: 2 };
+  const notified = h.bridge.card.saveSnapshot(snapshot).then(() => h.bridge.card.requestRefresh());
+  assert.equal(h.requests[0].op, 'card.saveSnapshot');
+  assert.deepEqual(h.requests[0].args, { value: snapshot });
+  await Promise.resolve();
+  assert.equal(h.requests.length, 1, 'refresh must wait until the snapshot is saved');
+  h.complete(h.requests[0].id, { ok: true, value: 12 });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.requests[1].op, 'card.requestRefresh');
+  h.complete(h.requests[1].id, { ok: true, value: true });
+  assert.equal(await notified, true);
+
+  const rejected = assert.rejects(h.bridge.card.saveSnapshot(snapshot),
+    error => error.code === 'ERROR' && error.message === '快照内容过大。');
+  h.complete(h.requests[2].id, { ok: false, error: { code: 'ERROR', message: '快照内容过大。' } });
+  await rejected;
+  assert.equal(h.requests.length, 3, 'failed saves must not retry automatically');
+});
+
 test('native submission failure rejects without retry', async () => {
   const h = loadBridge(() => { throw new Error('bridge unavailable'); });
   await assert.rejects(h.bridge.module.info(), /bridge unavailable/);

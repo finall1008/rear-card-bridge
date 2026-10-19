@@ -94,6 +94,9 @@
     },
     card: {
       onRefresh: function (fn) { if (typeof fn === 'function') refreshListeners.push(fn); },
+      saveSnapshot: function (value) {
+        return invoke('card.saveSnapshot', { value: value === undefined ? null : value });
+      },
       requestRefresh: function () { return invoke('card.requestRefresh'); }
     },
     log: {
