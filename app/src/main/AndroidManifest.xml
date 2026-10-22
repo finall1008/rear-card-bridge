@@ -11,6 +11,7 @@
         <provider android:name=".live.LiveContentProvider" android:authorities="${applicationId}.live" android:exported="true" />
         <provider android:name=".live.UpdateContentProvider" android:authorities="${applicationId}.update" android:exported="true" />
         <provider android:name=".bridge.BridgeProvider" android:authorities="${applicationId}.bridge" android:exported="true" />
+        <provider android:name=".module.install.InstallProvider" android:authorities="${applicationId}.install" android:exported="true" />
         <service android:name=".module.BackgroundRefreshService" android:exported="true" android:permission="android.permission.BIND_JOB_SERVICE" />
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>

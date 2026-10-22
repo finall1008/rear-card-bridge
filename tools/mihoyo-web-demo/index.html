@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>米游社 · 网页便笺 Demo</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <main>
+    <header><p class="eyebrow">LOCAL DEMO / CN SERVERS</p><h1>米游社 · 网页实时便笺</h1>
+      <p>原神 / 星穹铁道 / 绝区零。直接调用官方网页版战绩，不走小组件、SToken 或第三方中转。</p></header>
+    <div class="notice">非官方实验工具。Cookie 仅保存在当前本地服务内存，刷新网页不丢失，退出服务即清除。扫码前请核对手机上的官方登录提示；凭证不是“仅查看体力”的细粒度授权。</div>
+    <p id="message" role="status" aria-live="polite">正在连接本地服务…</p>
+    <section>
+      <h2>1. 登录米游社</h2>
+      <p id="loginState">未登录</p>
+      <div class="actions"><button id="login">生成网页登录二维码</button><button id="logout" class="secondary">清除本地登录态</button></div>
+      <div id="qrPanel" hidden><img id="qr" alt="米游社官方网页登录二维码" width="280" height="280"><p id="qrStatus">请用米游社扫描并手动确认登录</p><a id="loginLink" target="_blank" rel="noreferrer noopener">在官方页面打开登录链接</a><p>每 3 秒查询扫码状态，最多持续 3 分钟；此轮询不查询游戏数据。</p></div>
+      <details><summary>已有网页 Cookie？手动导入（可选）</summary>
+        <p>仅导入你自己的网页登录态。支持 ltoken_v2 / ltmid_v2 / ltuid_v2，以及 cookie_token_v2 / account_id_v2。不要提供账号密码、SToken 或 GameToken。不会读取本机浏览器 Cookie。</p>
+        <form id="cookieForm"><label for="cookie">Cookie 单行文本</label><input id="cookie" type="password" autocomplete="off" spellcheck="false" placeholder="ltoken_v2=…; ltmid_v2=…; ltuid_v2=…"><button type="submit">导入到服务内存</button></form>
+      </details>
+    </section>
+    <section>
+      <h2>2. 选择绑定角色</h2>
+      <div class="actions"><button id="loadRoles">加载绑定角色</button><select id="roles" aria-label="选择角色"><option value="">请先加载角色</option></select><button id="query">查询实时便笺</button></div>
+      <p>只允许查询当前登录账号绑定的角色；同一角色 60 秒内重复查询读取本地缓存。不自动开启战绩隐私开关，不自动完成人机验证。</p>
+    </section>
+    <section id="verification" hidden>
+      <h2>官方要求人机验证</h2>
+      <p>验证针对刚才查询的角色和设备。点击后才会加载极验官方组件，请本人手动操作；不会自动识别、拖动或调用打码服务。组件在独立的沙箱页面运行，不会收到登录 Cookie。</p>
+      <button id="verify">手动完成人机验证</button>
+      <div id="captchaContainer"></div>
+    </section>
+    <section id="result" hidden>
+      <h2 id="resultTitle">实时便笺</h2>
+      <div class="metrics"><article><p>体力（官方快照）</p><strong id="stamina">—</strong><p id="recovery">—</p></article><article><p id="dailyLabel">每日进度</p><strong id="daily">—</strong><p id="reward">—</p></article></div>
+      <p id="fetched">—</p><p>“活跃度达标”“任务完成”“奖励已领取”不是同一个状态。无法从返回数据确认的项目会显示未知。恢复倒计时在本地递减，体力数值保持官方快照；游戏内消耗后请重新查询。</p>
+      <details><summary>官方便笺原始 JSON（不包含登录 Cookie）</summary><pre id="raw"></pre></details>
+    </section>
+    <footer>没有公开只读 OAuth 授权；非公开接口可能调整或触发风控。不要把此服务暴露到局域网/公网。</footer>
+  </main>
+</body>
+</html>

@@ -1,4 +1,8 @@
+import com.android.build.api.variant.ApplicationAndroidComponentsExtension
+import java.io.ByteArrayOutputStream
 import java.util.Properties
+import javax.inject.Inject
+import org.gradle.process.ExecOperations
 
 plugins {
     id("com.android.application")
@@ -13,8 +17,8 @@ android {
         applicationId = "dev.finall.rearcardbridge"
         minSdk = 35
         targetSdk = 35
-        versionCode = 17
-        versionName = "1.2.4"
+        versionCode = 18
+        versionName = "1.3.0"
     }
     buildFeatures { compose = true; aidl = true; buildConfig = true }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_21; targetCompatibility = JavaVersion.VERSION_21 }
@@ -80,6 +84,8 @@ android {
             versionNameSuffix = "-debug"
         }
     }
+    // AGP 不接受 Provider；生成目录由 copyRootAgentDex 填充并用 preBuild 挂好依赖。
+    sourceSets.getByName("main").assets.srcDir("${layout.buildDirectory.get()}/generated/assets")
 }
 kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_21) } }
 dependencies {
@@ -99,4 +105,96 @@ dependencies {
     implementation("dev.rikka.shizuku:provider:13.1.5")
     implementation("org.jsoup:jsoup:1.21.2")
     testImplementation("junit:junit:4.13.2")
+}
+
+interface RootAgentExec {
+    @get:Inject
+    val execOperations: ExecOperations
+}
+
+val rootAgentSdk = extensions.getByType(ApplicationAndroidComponentsExtension::class.java).sdkComponents
+val rootAgentExec = objects.newInstance(RootAgentExec::class.java)
+
+val generateRootAgentDex = tasks.register("generateRootAgentDex") {
+    group = "build"
+    description = "Compile RelayInstaller.java with javac and convert it to classes.dex."
+    val source = layout.projectDirectory.file("src/main/rootagent/RelayInstaller.java")
+    val classesDir = layout.buildDirectory.dir("generated/rootagent/classes")
+    val dexDir = layout.buildDirectory.dir("generated/rootagent")
+    val sdkDirProvider = rootAgentSdk.sdkDirectory
+    val bootJars = rootAgentSdk.bootClasspath
+    inputs.file(source)
+    inputs.files(bootJars)
+    outputs.file(dexDir.map { it.file("classes.dex") })
+    doLast {
+        val classes = classesDir.get().asFile
+        val dexOut = dexDir.get().asFile
+        classes.mkdirs()
+        dexOut.mkdirs()
+        classes.listFiles()?.forEach { if (it.isFile) it.delete() }
+        val sdkDir = sdkDirProvider.get().asFile
+        val androidJar = bootJars.get().map { it.asFile }.firstOrNull { it.name == "android.jar" }
+            ?: File(sdkDir, "platforms/android-37.0/android.jar")
+        check(androidJar.isFile) { "android.jar not found: $androidJar" }
+        val d8 = File(sdkDir, "build-tools/36.0.0/d8")
+        check(d8.isFile) { "d8 not found: $d8" }
+        val javaHome = ByteArrayOutputStream()
+        val home = rootAgentExec.execOperations.exec {
+            setCommandLine(listOf("/usr/libexec/java_home"))
+            standardOutput = javaHome
+            isIgnoreExitValue = true
+        }
+        val javac = if (home.exitValue == 0) {
+            File(javaHome.toString(Charsets.UTF_8).trim(), "bin/javac")
+        } else {
+            File(System.getProperty("java.home"), "bin/javac")
+        }
+        check(javac.isFile) { "javac not found: $javac" }
+        rootAgentExec.execOperations.exec {
+            setCommandLine(listOf(
+                javac.absolutePath,
+                "--release", "8",
+                "-classpath", androidJar.absolutePath,
+                "-d", classes.absolutePath,
+                source.asFile.absolutePath,
+            ))
+        }
+        val classFiles = classes.listFiles { file -> file.extension == "class" }?.sortedBy { it.name }.orEmpty()
+        check(classFiles.any { it.name == "RelayInstaller.class" }) { "javac did not produce RelayInstaller.class" }
+        val dexFile = File(dexOut, "classes.dex")
+        if (dexFile.exists()) dexFile.delete()
+        rootAgentExec.execOperations.exec {
+            setCommandLine(
+                listOf(
+                    d8.absolutePath,
+                    "--min-api", "26",
+                    "--lib", androidJar.absolutePath,
+                    "--output", dexOut.absolutePath,
+                ) + classFiles.map { it.absolutePath },
+            )
+        }
+        check(dexFile.isFile) { "d8 did not produce classes.dex" }
+    }
+}
+
+tasks.register<Copy>("copyRootAgentDex") {
+    group = "build"
+    description = "Copy the root agent dex into generated assets as rootagent.dex."
+    dependsOn(generateRootAgentDex)
+    from(layout.buildDirectory.dir("generated/rootagent")) {
+        include("classes.dex")
+    }
+    into(layout.buildDirectory.dir("generated/assets"))
+    rename("classes.dex", "rootagent.dex")
+}
+
+tasks.named("preBuild") {
+    dependsOn("generateRootAgentDex")
+    dependsOn("copyRootAgentDex")
+}
+
+tasks.configureEach {
+    if ((name.startsWith("merge") || name.startsWith("package")) && name.contains("Assets")) {
+        dependsOn("copyRootAgentDex")
+    }
 }

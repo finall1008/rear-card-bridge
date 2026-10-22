@@ -46,30 +46,15 @@ class UpdateContentProvider : ContentProvider() {
                 } finally { file.delete() }
                 val store = LiveContentStore(context)
                 val group = store.group(context.packageName, installed.manifest.id)
-                if (group?.cardId == null) {
-                    return@synchronized failure("BINDING_REQUIRED", "模块已安装；请通过前台入口选择并绑定目标。")
-                        .apply {
-                            putString("key", installed.manifest.id)
-                            putLong("revision", saved.revision)
-                        }
-                }
                 result.putString("key", installed.manifest.id)
-                result.putString("card_id", group.cardId)
-                val resources = store.resourceStatus(group.id)
+                if (group == null) {
+                    return@synchronized failure("BINDING_REQUIRED", "模块已安装；请通过前台入口安装为独立背屏卡。")
+                        .apply { putLong("revision", saved.revision) }
+                }
                 result.apply {
                     putString("status", "SAVED")
-                    putString("message", "模块已更新；背屏读取时间由系统载体决定。${resources.message}")
+                    putString("message", "模块已更新；重新安装为背屏卡即可生效。")
                     putLong("revision", saved.revision)
-                    putString("carrier_resource_status", resources.state.name)
-                    if (resources.state != CarrierResourceState.UNKNOWN) {
-                        putBoolean("carrier_update_required", resources.state == CarrierResourceState.UPDATE_REQUIRED)
-                    }
-                    putBoolean("reapply_confirmation_pending", resources.state == CarrierResourceState.REAPPLY_REQUIRED)
-                    resources.changes?.let {
-                        putInt("static_resources_added", it.added.size)
-                        putInt("static_resources_modified", it.modified.size)
-                        putInt("static_resources_removed", it.removed.size)
-                    }
                 }
             }
         } catch (error: SecurityException) {

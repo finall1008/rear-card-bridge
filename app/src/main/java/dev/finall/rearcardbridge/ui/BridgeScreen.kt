@@ -2,7 +2,8 @@ package dev.finall.rearcardbridge.ui
 
 import android.content.Intent
 import android.net.Uri
-import androidx.compose.foundation.Image
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -12,7 +13,6 @@ import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.Role
@@ -24,8 +24,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.finall.rearcardbridge.BuildConfig
-import dev.finall.rearcardbridge.live.CarrierResourceState
 import dev.finall.rearcardbridge.model.BridgeUiState
+import dev.finall.rearcardbridge.model.InstallMode
 import dev.finall.rearcardbridge.model.ModuleInfo
 import dev.finall.rearcardbridge.model.ShizukuStatus
 import dev.finall.rearcardbridge.store.CatalogModule
@@ -50,12 +50,7 @@ fun BridgeScreen(
     state: BridgeUiState,
     onAuthorize: () -> Unit,
     onRefresh: () -> Unit,
-    onSelectCard: (String) -> Unit,
-    onInstallCarrier: () -> Unit,
-    onRestore: (String) -> Unit,
-    onOpenRearSettings: (String?) -> Unit,
     onDismissError: () -> Unit,
-    onConfirmReapplied: () -> Unit,
     onInstallModuleZip: () -> Unit,
     onInstallModuleGit: (String, String?) -> Unit,
     onRefreshShop: () -> Unit,
@@ -67,18 +62,20 @@ fun BridgeScreen(
     onUpdateModule: (String) -> Unit,
     onToggleBackgroundRefresh: () -> Unit,
     onSetBackgroundRefreshInterval: (String, Int) -> Unit,
+    onInstallStandalone: (String) -> Unit,
+    onUpdateStandalone: (String) -> Unit,
+    onInstallManagerCard: () -> Unit,
+    onSetInstallMode: (InstallMode) -> Unit,
+    onCancelInstallTask: (String) -> Unit,
 ) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     val nav = rememberNavController<BridgeRoute>(BridgeRoute.Root)
     var handledInstall by rememberSaveable { mutableLongStateOf(0L) }
     var showGit by remember { mutableStateOf(false) }
-    var confirmWrite by remember { mutableStateOf(false) }
-    var confirmRestore by remember { mutableStateOf(false) }
     var confirmUninstall by remember { mutableStateOf(false) }
     val topRoute = nav.backStack.last()
     val moduleId = when (topRoute) {
         is BridgeRoute.ModuleDetail -> topRoute.moduleId
-        is BridgeRoute.Targets -> topRoute.moduleId
         is BridgeRoute.ModuleSettings -> topRoute.moduleId
         else -> null
     }
@@ -95,7 +92,6 @@ fun BridgeScreen(
                 tab = 0
                 nav.popUntil { it == BridgeRoute.Root }
                 nav.push(BridgeRoute.ModuleDetail(id))
-                if (state.boundCardId == null) nav.push(BridgeRoute.Targets(id))
             }
         }
     }
@@ -145,6 +141,7 @@ fun BridgeScreen(
                                     nav.push(BridgeRoute.ModuleDetail(id))
                                 }, contentPadding = listPadding)
                             2 -> SettingsPage(state, onAuthorize, onRefresh, onToggleBackgroundRefresh,
+                                onSetInstallMode, onInstallManagerCard,
                                 contentPadding = listPadding)
                             else -> ModuleListPage(state, onInstallModuleZip, contentPadding = listPadding,
                                 onInstallGit = { showGit = true }, onOpenModule = { id ->
@@ -162,17 +159,10 @@ fun BridgeScreen(
                         onOpenSettings = { nav.push(BridgeRoute.ModuleSettings(route.moduleId)) },
                         onUpdate = { onUpdateModule(route.moduleId) },
                         onUninstall = { confirmUninstall = true },
-                        onPickTarget = { nav.push(BridgeRoute.Targets(route.moduleId)) },
-                        onRestore = { confirmRestore = true },
-                        onOpenRearSettings = { onOpenRearSettings(detail.boundCardId) },
-                        onConfirmReapplied = onConfirmReapplied,
-                        onSetBackgroundRefreshInterval = onSetBackgroundRefreshInterval)
-                }
-            }
-            entry<BridgeRoute.Targets> { route ->
-                ModulePageScaffold("选择替换目标", back) {
-                    if (state.activeModuleId != route.moduleId) ModuleLoadingPage()
-                    else TargetPickerPage(state, ready, onSelectCard) { confirmWrite = true }
+                        onSetBackgroundRefreshInterval = onSetBackgroundRefreshInterval,
+                        onInstallStandalone = { onInstallStandalone(route.moduleId) },
+                        onUpdateStandalone = { onUpdateStandalone(route.moduleId) },
+                        onCancelInstallTask = onCancelInstallTask)
                 }
             }
             entry<BridgeRoute.ModuleSettings> { route ->
@@ -198,28 +188,8 @@ fun BridgeScreen(
                 }
             }
         }
-        WindowDialog(show = confirmWrite, title = "写入替换目标？",
-            summary = "将「${state.cards.firstOrNull { it.id == state.selectedCardId }?.title.orEmpty()}」作为本模块载体。原始资源会备份；写入后仍需在系统里重新应用。",
-            onDismissRequest = { confirmWrite = false }) {
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Button(onClick = { confirmWrite = false }, modifier = Modifier.weight(1f)) { Text("取消") }
-                Button(onClick = { confirmWrite = false; nav.pop(); onInstallCarrier() },
-                    modifier = Modifier.weight(1f), enabled = !state.busy,
-                    colors = ButtonDefaults.buttonColorsPrimary()) { Text("写入") }
-            }
-        }
-        WindowDialog(show = confirmRestore, title = "恢复原始资源？",
-            summary = "恢复此目标的原始资源并解除模块绑定。之后请在系统里重新应用原卡片。",
-            onDismissRequest = { confirmRestore = false }) {
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Button(onClick = { confirmRestore = false }, modifier = Modifier.weight(1f)) { Text("取消") }
-                Button(onClick = { confirmRestore = false; module?.boundCardId?.let(onRestore) },
-                    modifier = Modifier.weight(1f), enabled = ready && !state.busy,
-                    colors = ButtonDefaults.buttonColorsPrimary()) { Text("恢复") }
-            }
-        }
-        WindowDialog(show = confirmUninstall, title = "卸载模块？",
-            summary = "删除模块及其配置、业务数据。已绑定的模块须先恢复原始资源。",
+        WindowDialog(show = confirmUninstall, title = "卸载模块并删除背屏卡？",
+            summary = "删除模块及其配置、业务数据，并按当前授权模式移除背屏上的对应卡片。",
             onDismissRequest = { confirmUninstall = false }) {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(onClick = { confirmUninstall = false }, modifier = Modifier.weight(1f)) { Text("取消") }
@@ -289,9 +259,12 @@ private fun ModuleListPage(state: BridgeUiState, onInstallZip: () -> Unit,
         items(state.modules, key = { it.id }) { module ->
             Card(Modifier.fillMaxWidth()) {
                 BasicComponent(title = module.name,
-                    summary = "${module.version} · ${module.boundCardTitle?.let { "替换 $it" } ?: "待选择替换目标"}",
+                    summary = module.version,
                     startAction = { Icon(MiuixIcons.GridView, contentDescription = null, modifier = Modifier.size(36.dp)) },
-                    endActions = { ForwardIcon() }, enabled = !state.busy,
+                    endActions = {
+                        if (module.cardNeedsUpdate == true) UpdateDot()
+                        ForwardIcon()
+                    }, enabled = !state.busy,
                     onClick = { onOpenModule(module.id) })
             }
         }
@@ -304,11 +277,9 @@ private fun ModuleListPage(state: BridgeUiState, onInstallZip: () -> Unit,
 @Composable
 private fun ModuleDetailPage(state: BridgeUiState, module: ModuleInfo,
     onOpenSettings: () -> Unit, onUpdate: () -> Unit, onUninstall: () -> Unit,
-    onPickTarget: () -> Unit, onRestore: () -> Unit, onOpenRearSettings: () -> Unit,
-    onConfirmReapplied: () -> Unit, onSetBackgroundRefreshInterval: (String, Int) -> Unit) {
-    val resources = state.carrierResources
-    val ready = state.shizuku.status == ShizukuStatus.READY
-    val boundCard = state.cards.firstOrNull { it.id == module.boundCardId }
+    onSetBackgroundRefreshInterval: (String, Int) -> Unit,
+    onInstallStandalone: () -> Unit, onUpdateStandalone: () -> Unit,
+    onCancelInstallTask: (String) -> Unit) {
     val intervalMinutes = module.backgroundIntervalMinutes
     var showIntervalDialog by remember { mutableStateOf(false) }
     val intervalField = rememberTextFieldState()
@@ -317,6 +288,16 @@ private fun ModuleDetailPage(state: BridgeUiState, module: ModuleInfo,
     val intervalValid = parsedInterval != null && parsedInterval >= 5
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        if (module.cardInstalled && module.cardNeedsUpdate == true) {
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    BasicComponent(title = "卡片资源有更新",
+                        summary = "静态资源有变化，更新背屏上的对应卡片内容",
+                        endActions = { ForwardIcon() }, onClick = onUpdateStandalone,
+                        enabled = !state.busy)
+                }
+            }
+        }
         item {
             Card(Modifier.fillMaxWidth()) {
                 BasicComponent(title = module.name, summary = "${module.version} · ${module.author}",
@@ -358,37 +339,52 @@ private fun ModuleDetailPage(state: BridgeUiState, module: ModuleInfo,
                     endActions = { ForwardIcon() }, onClick = onOpenSettings, enabled = !state.busy)
                 if (module.source?.contains('@') == true) BasicComponent(title = "检查更新", summary = module.source,
                     endActions = { ForwardIcon() }, onClick = onUpdate, enabled = !state.busy)
-                BasicComponent(title = "卸载模块", summary = "删除模块及其数据",
+                BasicComponent(title = "卸载模块并删除背屏卡", summary = "删除模块及其数据，并移除背屏上的对应卡片",
                     endActions = { ForwardIcon() }, onClick = onUninstall, enabled = !state.busy)
             }
         }
+        val moduleTasks = state.installTasks.filter { it.groupId == module.groupId }
+        val pendingTask = moduleTasks.firstOrNull {
+            it.state == dev.finall.rearcardbridge.module.install.InstallTaskState.PENDING ||
+                it.state == dev.finall.rearcardbridge.module.install.InstallTaskState.CLAIMED
+        }
+        if (!module.cardInstalled || pendingTask != null) {
         item {
             Card(Modifier.fillMaxWidth()) {
-                BasicComponent(title = "替换目标", summary = module.boundCardTitle ?: "尚未选择",
-                    startAction = boundCard?.preview?.let { bitmap -> {
-                        Image(bitmap.asImageBitmap(), boundCard.title, Modifier.size(56.dp))
-                    } })
-                if (module.boundCardId == null) {
-                    BasicComponent(title = "选择替换目标", summary = "预设卡片和自行生成的卡片均可使用",
-                        endActions = { ForwardIcon() }, onClick = onPickTarget, enabled = !state.busy)
+                BasicComponent(title = "独立背屏卡",
+                    summary = if (module.legacyCardId != null)
+                        "该模块此前写在载体「${module.legacyCardTitle ?: module.legacyCardId}」上"
+                    else "把模块直接插入为一张新卡，不占用现有载体")
+                if (pendingTask == null) {
+                    if (!module.cardInstalled) {
+                        BasicComponent(
+                            title = if (module.legacyCardId != null) "迁移为独立背屏卡" else "安装为新卡",
+                            summary = when (state.installMode) {
+                                InstallMode.ROOT -> "root 直连写入，原载体将自动恢复"
+                                InstallMode.SHIZUKU -> "暂存资源后由背屏管理器卡插入，原载体将自动恢复"
+                            },
+                            endActions = { ForwardIcon() }, onClick = onInstallStandalone,
+                            enabled = !state.busy)
+                    } else {
+                        BasicComponent(title = "已安装为独立背屏卡",
+                            summary = "脚本与内容变化由卡片自动更新，无需重新安装")
+                    }
                 } else {
-                    if (resources != null) BasicComponent(title = "载体状态", summary = resources.message)
-                    BasicComponent(title = "更新载体资源", summary = "写入当前模块的最新载体包",
-                        endActions = { ForwardIcon() }, onClick = onPickTarget, enabled = !state.busy)
-                    BasicComponent(title = "恢复原始资源", summary = "恢复后可以选择其他替换目标",
-                        endActions = { ForwardIcon() }, onClick = onRestore,
-                        enabled = !state.busy && ready && boundCard?.hasBackup == true)
+                    BasicComponent(title = "安装任务进行中",
+                        summary = when (pendingTask.state) {
+                            dev.finall.rearcardbridge.module.install.InstallTaskState.PENDING ->
+                                "已暂存。请打开背屏「RearCard 安装管理器」卡片完成插入"
+                            dev.finall.rearcardbridge.module.install.InstallTaskState.CLAIMED ->
+                                "中转卡正在执行安装"
+                            else -> pendingTask.state.name
+                        })
+                    BasicComponent(title = "取消安装任务",
+                        endActions = { ForwardIcon() },
+                        onClick = { onCancelInstallTask(pendingTask.taskId) },
+                        enabled = !state.busy)
                 }
             }
         }
-        if (resources?.state == CarrierResourceState.REAPPLY_REQUIRED) item {
-            Card(Modifier.fillMaxWidth()) {
-                BasicComponent(title = "最后一步：重新应用", summary = "请到背屏设置中移除旧卡，再从原入口重新应用。")
-                BasicComponent(title = "打开背屏设置", endActions = { ForwardIcon() },
-                    onClick = onOpenRearSettings, enabled = !state.busy)
-                BasicComponent(title = "我已重新应用", summary = "记录你的手动确认", endActions = { ForwardIcon() },
-                    onClick = onConfirmReapplied, enabled = !state.busy)
-            }
         }
     }
     WindowDialog(show = showIntervalDialog, title = "后台刷新间隔",
@@ -419,69 +415,53 @@ private fun formatRefreshTime(epochMillis: Long): String =
     DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(epochMillis))
 
 @Composable
-private fun TargetPickerPage(state: BridgeUiState, ready: Boolean,
-    onSelectCard: (String) -> Unit, onWrite: () -> Unit) {
-    val selected = state.cards.firstOrNull { it.id == state.selectedCardId }
-    val occupied = state.groups.filter { it.id != state.activeGroupId }.mapNotNull { it.cardId }.toSet()
-    val changingBound = state.boundCardId != null
-    Column(Modifier.fillMaxSize()) {
-        LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            if (!ready || state.cards.isEmpty()) item {
-                Card(Modifier.fillMaxWidth()) {
-                    BasicComponent(title = if (ready) "没有本地卡片资源" else "需要 Shizuku 授权",
-                        summary = if (ready) "先在系统中添加一张卡片，再刷新列表。" else "请返回「设置与关于」完成授权。")
-                }
-            }
-            items(state.cards, key = { it.id }) { card ->
-                val taken = card.id in occupied
-                val selectable = ready && card.canReplace && !taken &&
-                    (!changingBound || card.id == state.boundCardId)
-                Card(Modifier.fillMaxWidth()) {
-                    BasicComponent(title = card.title,
-                        summary = when {
-                            taken -> "已被其他模块占用"
-                            !card.canReplace -> "只读资源"
-                            changingBound && card.id != state.boundCardId -> "先恢复当前目标，才能更换"
-                            else -> if (card.hasBackup) "可替换 · 已有原始备份" else "可替换 · 写入前自动备份"
-                        },
-                        startAction = card.preview?.let { bitmap -> {
-                            Image(bitmap.asImageBitmap(), card.title, Modifier.size(56.dp))
-                        } },
-                        endActions = { RadioButton(selected = card.id == state.selectedCardId, onClick = null) },
-                        onClick = { onSelectCard(card.id) }, role = Role.RadioButton,
-                        enabled = selectable && !state.busy)
-                }
-            }
-        }
-        Button(onClick = onWrite,
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 16.dp),
-            colors = ButtonDefaults.buttonColorsPrimary(),
-            enabled = ready && !state.busy && selected?.canReplace == true && selected.id !in occupied &&
-                (!changingBound || selected.id == state.boundCardId)) {
-            Text("写入并绑定", maxLines = 1)
-        }
-    }
-}
-
-@Composable
 private fun SettingsPage(state: BridgeUiState, onAuthorize: () -> Unit, onRefresh: () -> Unit,
-    onToggleBackgroundRefresh: () -> Unit, contentPadding: PaddingValues) {
+    onToggleBackgroundRefresh: () -> Unit,
+    onSetInstallMode: (InstallMode) -> Unit, onInstallManagerCard: () -> Unit,
+    contentPadding: PaddingValues) {
     val context = LocalContext.current
     val ready = state.shizuku.status == ShizukuStatus.READY
     LazyColumn(Modifier.fillMaxSize(), contentPadding = contentPadding,
         verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item {
             Card(Modifier.fillMaxWidth()) {
+                BasicComponent(title = "安装授权模式", summary = "决定背屏卡如何写入系统")
+                BasicComponent(title = "root 直装",
+                    summary = "通过 KernelSU 在 App 内直接执行插入与移除",
+                    endActions = { RadioDot(selected = state.installMode == InstallMode.ROOT) },
+                    onClick = { onSetInstallMode(InstallMode.ROOT) },
+                    enabled = !state.busy)
+                BasicComponent(title = "Shizuku + 管理器卡",
+                    summary = "资源经 Shizuku 暂存，由背屏管理器卡在系统侧完成插入",
+                    endActions = { RadioDot(selected = state.installMode == InstallMode.SHIZUKU) },
+                    onClick = { onSetInstallMode(InstallMode.SHIZUKU) },
+                    enabled = !state.busy)
+            }
+        }
+        if (state.installMode == InstallMode.SHIZUKU) {
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    BasicComponent(title = "安装管理器卡到背屏",
+                        summary = if (state.managerCardInstalled)
+                            "已安装；打开背屏上的「RearCard 安装管理器」即可执行队列中的安装"
+                        else
+                            "需要 root 一次性引导；安装后打开它即可在背屏执行安装队列",
+                        endActions = { ForwardIcon() }, onClick = onInstallManagerCard,
+                        enabled = !state.busy)
+                }
+            }
+        }
+        item {
+            Card(Modifier.fillMaxWidth()) {
                 BasicComponent(title = "Shizuku", summary = when (state.shizuku.status) {
                     ShizukuStatus.NOT_RUNNING -> "未运行，请先启动 Shizuku"
-                    ShizukuStatus.AUTH_REQUIRED -> "未授权，替换载体需要授权"
+                    ShizukuStatus.AUTH_REQUIRED -> "未授权，无 root 暂存安装需要授权"
                     ShizukuStatus.CONNECTING -> "正在连接…"
-                    ShizukuStatus.READY -> "已连接 · ${state.cards.size} 个本地卡片资源"
+                    ShizukuStatus.READY -> "已连接，无 root 时用于暂存安装包"
                     ShizukuStatus.ERROR -> state.shizuku.message.ifBlank { "连接失败" }
                 })
-                BasicComponent(title = if (ready) "刷新替换目标" else "授权与连接",
-                    summary = if (ready) "重新扫描预设及自行生成的本地卡片" else "只有写入和恢复载体需要 Shizuku",
+                BasicComponent(title = "授权与连接",
+                    summary = "仅无 root 设备的暂存安装需要 Shizuku",
                     endActions = { ForwardIcon() }, onClick = if (ready) onRefresh else onAuthorize,
                     enabled = !state.busy)
             }
@@ -523,4 +503,25 @@ private fun SettingsPage(state: BridgeUiState, onAuthorize: () -> Unit, onRefres
 @Composable
 private fun ForwardIcon() {
     Icon(MiuixIcons.ChevronForward, contentDescription = null, modifier = Modifier.size(20.dp))
+}
+
+
+/** Small filled/outlined dot used for single-choice rows. */
+@Composable
+private fun RadioDot(selected: Boolean) {
+    val color = if (selected) MiuixTheme.colorScheme.primary
+        else MiuixTheme.colorScheme.onSurfaceVariantSummary
+    Canvas(Modifier.size(20.dp)) {
+        drawCircle(color, radius = size.minDimension / 2, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx()))
+        if (selected) drawCircle(color, radius = size.minDimension / 4)
+    }
+}
+
+
+/** Small blue badge shown on modules whose installed card has pending static updates. */
+@Composable
+private fun UpdateDot() {
+    Canvas(Modifier.padding(end = 8.dp).size(10.dp)) {
+        drawCircle(Color(0xFF3482FF))
+    }
 }

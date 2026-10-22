@@ -12,8 +12,5 @@ internal sealed interface BridgeRoute : NavKey {
     data class ModuleDetail(val moduleId: String) : BridgeRoute
 
     @Serializable
-    data class Targets(val moduleId: String) : BridgeRoute
-
-    @Serializable
     data class ModuleSettings(val moduleId: String) : BridgeRoute
 }

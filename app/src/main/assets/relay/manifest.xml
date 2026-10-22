@@ -1,0 +1,171 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Widget version="2" frameRate="1" screenWidth="912" clearCanvas="true">
+  <!--
+    中转管理器卡：在背屏宿主(com.xiaomi.subscreencenter)内执行。
+    流程：ContentResolver.call 领取本 App 登记的安装任务 -> 从 /data/local/tmp 暂存复制资源
+    -> Os.stat 校验 -> 手工序列化 Widget parcel -> insertAppWidget/updateApp/removeAppWidget
+    -> getWidgetList 复核 -> call 回报结果。
+    不使用禁表类；所有对象调用均为 SDK 公开方法 + 宿主自带 FileUtils.Companion.copyFile。
+  -->
+  <Group name="relay_manager">
+    <Triggers>
+      <Trigger action="init">
+        <VariableCommand name="r_found" expression="0"/>
+        <VariableCommand name="r_insert" expression="-999"/>
+        <VariableCommand name="v_count" expression="-999"/>
+        <VariableCommand name="r_ok" expression="0"/>
+        <VariableCommand name="r_code" expression="'IDLE'" type="string"/>
+        <VariableCommand name="r_msg" expression="'暂无待安装任务'" type="string"/>
+        <FieldCommand class="com.miui.maml.ScreenContext" target="__objContext" targetType="var" field="mContext" method="get" return="r_ctx" returnType="object"/>
+        <MethodCommand class="android.content.Context" target="r_ctx" targetType="var" method="getPackageName" return="r_pkg" returnType="string"/>
+        <MethodCommand class="android.content.Context" target="r_ctx" targetType="var" method="getContentResolver" return="r_cr" returnType="object"/>
+        <MethodCommand class="android.os.Bundle" target="r_empty" targetType="ctor" method="Bundle" return="r_empty" returnType="object"/>
+        <MethodCommand class="android.content.ContentResolver" target="r_cr" targetType="var" method="call" paramTypes="java.lang.String,java.lang.String,java.lang.String,android.os.Bundle" params="'dev.finall.rearcardbridge.install','claim_next','','r_empty'" return="r_claim" returnType="object" errorVar="r_claim_err"/>
+        <IfCommand ifCondition="eq(#r_claim_err,1)">
+          <Consequent>
+            <MethodCommand class="android.os.Bundle" target="r_claim" targetType="var" method="getBoolean" paramTypes="java.lang.String" params="'found'" return="r_found" returnType="number"/>
+            <MethodCommand class="android.os.Bundle" target="r_claim" targetType="var" method="getString" paramTypes="java.lang.String" params="'taskId'" return="t_id" returnType="string"/>
+            <MethodCommand class="android.os.Bundle" target="r_claim" targetType="var" method="getString" paramTypes="java.lang.String" params="'op'" return="t_op" returnType="string"/>
+            <MethodCommand class="android.os.Bundle" target="r_claim" targetType="var" method="getString" paramTypes="java.lang.String" params="'cardId'" return="t_card" returnType="string"/>
+            <MethodCommand class="android.os.Bundle" target="r_claim" targetType="var" method="getString" paramTypes="java.lang.String" params="'cardName'" return="t_name" returnType="string"/>
+            <MethodCommand class="android.os.Bundle" target="r_claim" targetType="var" method="getString" paramTypes="java.lang.String" params="'stagingPath'" return="t_stage" returnType="string"/>
+            <MethodCommand class="android.os.Bundle" target="r_claim" targetType="var" method="getLong" paramTypes="java.lang.String" params="'resourceRevision'" return="t_rev" returnType="number"/>
+            <VariableCommand name="t_stage" expression="ifelse(or(isnull(@t_stage),strIsEmpty(@t_stage)),'/data/local/tmp/rearcard-staging/' + @t_id,@t_stage)" type="string"/>
+            <VariableCommand name="v_d1" expression="'/data/user/0/' + @r_pkg + '/files/rearcard'" type="string"/>
+            <VariableCommand name="v_d2" expression="@v_d1 + '/' + @t_card" type="string"/>
+            <VariableCommand name="v_base" expression="@v_d2 + '/' + #t_rev" type="string"/>
+            <VariableCommand name="v_mrc" expression="@v_base + '/rearScreen.mrc'" type="string"/>
+            <VariableCommand name="v_icon" expression="@v_base + '/app_icon.png'" type="string"/>
+            <VariableCommand name="v_prev" expression="@v_base + '/preview.png'" type="string"/>
+            <VariableCommand name="s_mrc" expression="@t_stage + '/rearScreen.mrc'" type="string"/>
+            <VariableCommand name="s_icon" expression="@t_stage + '/app_icon.png'" type="string"/>
+            <VariableCommand name="s_prev" expression="@t_stage + '/preview.png'" type="string"/>
+            <MethodCommand class="android.app.ActivityManager" target="r_static" targetType="var" method="getService" return="v_am" returnType="object" errorVar="v_am_err"/>
+            <MethodCommand class="android.content.Intent" target="v_intent" targetType="ctor" method="Intent" return="v_intent" returnType="object"/>
+            <MethodCommand class="android.content.Intent" target="v_intent" targetType="var" method="setClassName" paramTypes="java.lang.String,java.lang.String" params="'com.xiaomi.subscreencenter','com.xiaomi.subscreencenter.service.SubScreenService'"/>
+            <MethodCommand class="android.app.IActivityManager" target="v_am" targetType="var" method="peekService" paramTypes="android.content.Intent,java.lang.String,java.lang.String" params="'v_intent','',@r_pkg" return="v_svc" returnType="object" errorVar="v_peek_err"/>
+            <MethodCommand class="android.os.IBinder" target="v_svc" targetType="var" method="getInterfaceDescriptor" return="v_desc" returnType="string"/>
+            <IfCommand ifCondition="and(eq(#r_found,1),eqs(@t_op,'REMOVE'))">
+              <Consequent>
+                <MethodCommand class="android.os.Parcel" target="r_static" targetType="var" method="obtain" return="v_req" returnType="object"/>
+                <MethodCommand class="android.os.Parcel" target="r_static" targetType="var" method="obtain" return="v_res" returnType="object"/>
+                <MethodCommand class="android.os.Parcel" target="v_req" targetType="var" method="writeInterfaceToken" paramTypes="java.lang.String" params="@v_desc"/>
+                <MethodCommand class="android.os.Parcel" target="v_req" targetType="var" method="writeString" paramTypes="java.lang.String" params="@t_card"/>
+                <MethodCommand class="android.os.IBinder" target="v_svc" targetType="var" method="transact" paramTypes="int,android.os.Parcel,android.os.Parcel,int" params="13,'v_req','v_res',0" errorVar="v_tr_err"/>
+                <IfCommand ifCondition="eq(#v_tr_err,1)">
+                  <Consequent>
+                    <MethodCommand class="android.os.Parcel" target="v_res" targetType="var" method="readException" errorVar="v_exc"/>
+                    <IfCommand ifCondition="eq(#v_exc,1)">
+                      <Consequent>
+                        <MethodCommand class="android.os.Parcel" target="v_res" targetType="var" method="readInt" return="r_insert" returnType="number"/>
+                        <VariableCommand name="r_ok" expression="ifelse(eq(#r_insert,0),1,0)"/>
+                        <VariableCommand name="r_code" expression="ifelse(eq(#r_insert,0),'OK','REMOVE_FAILED')" type="string"/>
+                        <VariableCommand name="r_msg" expression="ifelse(eq(#r_insert,0),'已移除背屏卡','移除失败 code=' + #r_insert)" type="string"/>
+                      </Consequent>
+                    </IfCommand>
+                  </Consequent>
+                </IfCommand>
+                <MethodCommand class="android.os.Parcel" target="v_req" targetType="var" method="recycle"/>
+                <MethodCommand class="android.os.Parcel" target="v_res" targetType="var" method="recycle"/>
+              </Consequent>
+            </IfCommand>
+            <IfCommand ifCondition="and(eq(#r_found,1),not(eqs(@t_op,'REMOVE')))">
+              <Consequent>
+                <MethodCommand class="android.system.Os" target="r_static" targetType="var" method="mkdir" paramTypes="java.lang.String,int" params="@v_d1,493" errorVar="v_mk1"/>
+                <MethodCommand class="android.system.Os" target="r_static" targetType="var" method="mkdir" paramTypes="java.lang.String,int" params="@v_d2,493" errorVar="v_mk2"/>
+                <MethodCommand class="android.system.Os" target="r_static" targetType="var" method="mkdir" paramTypes="java.lang.String,int" params="@v_base,493" errorVar="v_mk3"/>
+                <FieldCommand class="com.miui.maml.util.FileUtils" field="Companion" method="get" return="v_fu" returnType="object" errorVar="v_fu_err"/>
+                <MethodCommand class="com.miui.maml.util.FileUtils$Companion" target="v_fu" targetType="var" method="copyFile" paramTypes="java.lang.String,java.lang.String" params="@s_mrc,@v_mrc" errorVar="v_cp1e"/>
+                <MethodCommand class="com.miui.maml.util.FileUtils$Companion" target="v_fu" targetType="var" method="copyFile" paramTypes="java.lang.String,java.lang.String" params="@s_icon,@v_icon" errorVar="v_cp2e"/>
+                <MethodCommand class="com.miui.maml.util.FileUtils$Companion" target="v_fu" targetType="var" method="copyFile" paramTypes="java.lang.String,java.lang.String" params="@s_prev,@v_prev" errorVar="v_cp3e"/>
+                <MethodCommand class="android.system.Os" target="r_static" targetType="var" method="stat" paramTypes="java.lang.String" params="@v_mrc" return="v_st" returnType="object" errorVar="v_staterr"/>
+                <FieldCommand class="android.system.StructStat" target="v_st" targetType="var" field="st_size" method="get" return="v_size" returnType="number"/>
+                <IfCommand ifCondition="eq(#v_staterr,1)">
+                  <Consequent>
+                    <MethodCommand class="android.os.Bundle" target="v_b" targetType="ctor" method="Bundle" return="v_b" returnType="object"/>
+                    <MethodCommand class="android.os.Bundle" target="v_b" targetType="var" method="putString" paramTypes="java.lang.String,java.lang.String" params="'resId',@t_card"/>
+                    <MethodCommand class="android.os.Bundle" target="v_b" targetType="var" method="putString" paramTypes="java.lang.String,java.lang.String" params="'appName',@t_name"/>
+                    <MethodCommand class="android.os.Bundle" target="v_b" targetType="var" method="putInt" paramTypes="java.lang.String,int" params="'appCardType',2"/>
+                    <MethodCommand class="android.os.Bundle" target="v_b" targetType="var" method="putString" paramTypes="java.lang.String,java.lang.String" params="'appIconPath',@v_icon"/>
+                    <MethodCommand class="android.os.Bundle" target="v_b" targetType="var" method="putString" paramTypes="java.lang.String,java.lang.String" params="'previewLightPath',@v_prev"/>
+                    <MethodCommand class="android.os.Bundle" target="v_b" targetType="var" method="putString" paramTypes="java.lang.String,java.lang.String" params="'previewDarkPath',@v_prev"/>
+                    <MethodCommand class="android.os.Bundle" target="v_b" targetType="var" method="putBoolean" paramTypes="java.lang.String,boolean" params="'isGame',0"/>
+                    <MethodCommand class="android.os.Bundle" target="v_b" targetType="var" method="putBoolean" paramTypes="java.lang.String,boolean" params="'isPreset',0"/>
+                    <MethodCommand class="android.os.Parcel" target="r_static" targetType="var" method="obtain" return="v_req" returnType="object"/>
+                    <MethodCommand class="android.os.Parcel" target="r_static" targetType="var" method="obtain" return="v_res" returnType="object"/>
+                    <MethodCommand class="android.os.Parcel" target="v_req" targetType="var" method="writeInterfaceToken" paramTypes="java.lang.String" params="@v_desc"/>
+                    <MethodCommand class="android.os.Parcel" target="v_req" targetType="var" method="writeInt" paramTypes="int" params="1"/>
+                    <MethodCommand class="android.os.Parcel" target="v_req" targetType="var" method="writeInt" paramTypes="int" params="0"/>
+                    <MethodCommand class="android.os.Parcel" target="v_req" targetType="var" method="writeInt" paramTypes="int" params="7"/>
+                    <MethodCommand class="android.os.Parcel" target="v_req" targetType="var" method="writeInt" paramTypes="int" params="0"/>
+                    <MethodCommand class="android.os.Parcel" target="v_req" targetType="var" method="writeBundle" paramTypes="android.os.Bundle" params="'v_b'"/>
+                    <MethodCommand class="android.os.Parcel" target="v_req" targetType="var" method="writeInt" paramTypes="int" params="0"/>
+                    <MethodCommand class="android.os.Parcel" target="v_req" targetType="var" method="writeString" paramTypes="java.lang.String" params="@v_mrc"/>
+                    <MethodCommand class="android.os.Parcel" target="v_req" targetType="var" method="writeInt" paramTypes="int" params="-1"/>
+                    <MethodCommand class="android.os.Parcel" target="v_req" targetType="var" method="writeInt" paramTypes="int" params="-1"/>
+                    <MethodCommand class="android.os.Parcel" target="v_req" targetType="var" method="writeInt" paramTypes="int" params="-1"/>
+                    <MethodCommand class="android.os.IBinder" target="v_svc" targetType="var" method="transact" paramTypes="int,android.os.Parcel,android.os.Parcel,int" params="ifelse(eqs(@t_op,'UPDATE'),12,11),'v_req','v_res',0" errorVar="v_tr_err"/>
+                    <IfCommand ifCondition="eq(#v_tr_err,1)">
+                      <Consequent>
+                        <MethodCommand class="android.os.Parcel" target="v_res" targetType="var" method="readException" errorVar="v_exc"/>
+                        <IfCommand ifCondition="eq(#v_exc,1)">
+                          <Consequent>
+                            <MethodCommand class="android.os.Parcel" target="v_res" targetType="var" method="readInt" return="r_insert" returnType="number"/>
+                          </Consequent>
+                        </IfCommand>
+                      </Consequent>
+                    </IfCommand>
+                    <MethodCommand class="android.os.Parcel" target="v_req" targetType="var" method="recycle"/>
+                    <MethodCommand class="android.os.Parcel" target="v_res" targetType="var" method="recycle"/>
+                    <MethodCommand class="android.os.Parcel" target="r_static" targetType="var" method="obtain" return="v_req" returnType="object"/>
+                    <MethodCommand class="android.os.Parcel" target="r_static" targetType="var" method="obtain" return="v_res" returnType="object"/>
+                    <MethodCommand class="android.os.Parcel" target="v_req" targetType="var" method="writeInterfaceToken" paramTypes="java.lang.String" params="@v_desc"/>
+                    <MethodCommand class="android.os.IBinder" target="v_svc" targetType="var" method="transact" paramTypes="int,android.os.Parcel,android.os.Parcel,int" params="14,'v_req','v_res',0" errorVar="v_tr2_err"/>
+                    <IfCommand ifCondition="eq(#v_tr2_err,1)">
+                      <Consequent>
+                        <MethodCommand class="android.os.Parcel" target="v_res" targetType="var" method="readException" errorVar="v_exc2"/>
+                        <IfCommand ifCondition="eq(#v_exc2,1)">
+                          <Consequent>
+                            <MethodCommand class="android.os.Parcel" target="v_res" targetType="var" method="readInt" return="v_count" returnType="number"/>
+                          </Consequent>
+                        </IfCommand>
+                      </Consequent>
+                    </IfCommand>
+                    <MethodCommand class="android.os.Parcel" target="v_req" targetType="var" method="recycle"/>
+                    <MethodCommand class="android.os.Parcel" target="v_res" targetType="var" method="recycle"/>
+                    <VariableCommand name="r_ok" expression="ifelse(eq(#r_insert,0),1,0)"/>
+                    <VariableCommand name="r_code" expression="ifelse(eq(#r_insert,0),'OK','INSERT_' + #r_insert)" type="string"/>
+                    <VariableCommand name="r_msg" expression="ifelse(eq(#r_insert,0),'安装完成，共 ' + #v_count + ' 张','安装失败 code=' + #r_insert)" type="string"/>
+                  </Consequent>
+                  <Alternate>
+                    <VariableCommand name="r_code" expression="'STAGE_COPY_FAILED'" type="string"/>
+                    <VariableCommand name="r_msg" expression="'资源复制失败'" type="string"/>
+                  </Alternate>
+                </IfCommand>
+              </Consequent>
+            </IfCommand>
+            <MethodCommand class="android.os.Bundle" target="r_rep" targetType="ctor" method="Bundle" return="r_rep" returnType="object"/>
+            <MethodCommand class="android.os.Bundle" target="r_rep" targetType="var" method="putBoolean" paramTypes="java.lang.String,boolean" params="'success',#r_ok"/>
+            <MethodCommand class="android.os.Bundle" target="r_rep" targetType="var" method="putString" paramTypes="java.lang.String,java.lang.String" params="'code',@r_code"/>
+            <MethodCommand class="android.os.Bundle" target="r_rep" targetType="var" method="putString" paramTypes="java.lang.String,java.lang.String" params="'message',@r_msg"/>
+            <IfCommand ifCondition="eq(#r_found,1)">
+              <Consequent>
+                <MethodCommand class="android.content.ContentResolver" target="r_cr" targetType="var" method="call" paramTypes="java.lang.String,java.lang.String,java.lang.String,android.os.Bundle" params="'dev.finall.rearcardbridge.install','report',@t_id,'r_rep'" return="r_ans" returnType="object" errorVar="r_rep_err"/>
+              </Consequent>
+            </IfCommand>
+          </Consequent>
+          <Alternate>
+            <VariableCommand name="r_msg" expression="'无法连接安装服务'" type="string"/>
+          </Alternate>
+        </IfCommand>
+        <MethodCommand class="android.util.Log" target="r_static" targetType="var" method="i" paramTypes="java.lang.String,java.lang.String" params="'RearCardManager','found=' + #r_found + ' op=' + @t_op + ' card=' + @t_card + ' insert=' + #r_insert + ' count=' + #v_count + ' code=' + @r_code"/>
+      </Trigger>
+    </Triggers>
+    <Rectangle x="0" y="0" w="912" h="596" fillColor="#FF0E1A2B"/>
+    <Text x="48" y="60" size="44" color="#FF66E8B3" text="RearCard 安装管理器"/>
+    <Text x="48" y="150" size="30" color="#FFFFFFFF" textExp="@r_msg"/>
+    <Text x="48" y="220" size="26" color="#FF9FB6D9" textExp="'任务：' + @t_op + '  ' + @t_card"/>
+    <Text x="48" y="285" size="26" color="#FF9FB6D9" textExp="'结果：' + @r_code + '  卡片数：' + #v_count"/>
+    <Text x="48" y="400" size="22" color="#FF6B7F99" text="保持本页打开直到显示完成"/>
+  </Group>
+</Widget>

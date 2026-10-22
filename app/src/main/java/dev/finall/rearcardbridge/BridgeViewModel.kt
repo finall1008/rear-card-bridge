@@ -5,10 +5,10 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.finall.rearcardbridge.live.ContentBinding
-import dev.finall.rearcardbridge.live.LiveContentContract
 import dev.finall.rearcardbridge.live.ContentOperations
 import dev.finall.rearcardbridge.live.LiveContentStore
 import dev.finall.rearcardbridge.model.BridgeUiState
+import dev.finall.rearcardbridge.model.InstallMode
 import dev.finall.rearcardbridge.model.ModuleInfo
 import dev.finall.rearcardbridge.model.OperationResult
 import dev.finall.rearcardbridge.model.ShizukuStatus
@@ -18,7 +18,11 @@ import dev.finall.rearcardbridge.module.ModuleInstaller
 import dev.finall.rearcardbridge.module.ModuleDowngradeException
 import dev.finall.rearcardbridge.module.ModuleStore
 import dev.finall.rearcardbridge.module.ModuleWebProfiles
-import dev.finall.rearcardbridge.packageio.CardPackageBuilder
+import dev.finall.rearcardbridge.module.install.InstallManager
+import dev.finall.rearcardbridge.module.install.InstallOp
+import dev.finall.rearcardbridge.module.install.InstallTask
+import dev.finall.rearcardbridge.module.install.ManagerCardAssets
+import dev.finall.rearcardbridge.root.RootCardInstaller
 import dev.finall.rearcardbridge.shizuku.ShizukuCardClient
 import dev.finall.rearcardbridge.store.CatalogModule
 import dev.finall.rearcardbridge.store.ModuleCatalogRepository
@@ -35,17 +39,20 @@ import kotlinx.coroutines.withContext
 
 class BridgeViewModel(application: Application) : AndroidViewModel(application) {
     private val client = ShizukuCardClient(application)
-    private val builder = CardPackageBuilder()
     private val contentStore = LiveContentStore(application)
     private val moduleStore = ModuleStore(application)
     private val moduleInstaller = ModuleInstaller(application)
-    private val mutableState = MutableStateFlow(BridgeUiState())
+    private val installManager = InstallManager(application)
+    private val prefs = application.getSharedPreferences(PREFS, Application.MODE_PRIVATE)
+    private val mutableState = MutableStateFlow(BridgeUiState(
+        installMode = InstallMode.fromPref(prefs.getString(PREF_INSTALL_MODE, null)),
+        managerCardInstalled = prefs.getBoolean(PREF_MANAGER_INSTALLED, false),
+    ))
     val state = mutableState.asStateFlow()
     private val operationLock = Mutex()
     private data class PendingModuleInstall(val file: File, val source: String, val updateOnly: Boolean)
     private var pendingModuleInstall: PendingModuleInstall? = null
     var onOperationResult: ((OperationResult, String?) -> Unit)? = null
-    var onOpenRearSettingsRequested: ((String?) -> OperationResult)? = null
 
     init {
         BackgroundRefreshScheduler.restorePreference(application)
@@ -67,15 +74,53 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
                     modules = it.modules.map(::withBackgroundSchedule)) }
             }
         }
+        viewModelScope.launch {
+            var previous = emptyList<InstallTask>()
+            installManager.taskFlow.collect { tasks ->
+                val finished = tasks.filter { task ->
+                    task.state == dev.finall.rearcardbridge.module.install.InstallTaskState.SUCCEEDED ||
+                        task.state == dev.finall.rearcardbridge.module.install.InstallTaskState.FAILED
+                }.filter { task ->
+                    previous.firstOrNull { it.taskId == task.taskId }?.let {
+                        it.state != task.state
+                    } ?: false
+                }
+                previous = tasks
+                mutableState.update { it.copy(installTasks = tasks) }
+                // The card may have been removed outside the app (the local snapshot
+                // only tracks what this device installed). A failed UPDATE is
+                // resubmitted as a fresh INSTALL unless a task for that card
+                // already exists after it.
+                val staleUpdates = tasks.filter {
+                    it.op == dev.finall.rearcardbridge.module.install.InstallOp.UPDATE &&
+                        it.state == dev.finall.rearcardbridge.module.install.InstallTaskState.FAILED
+                }.filter { failed ->
+                    tasks.none { other ->
+                        other.cardId == failed.cardId &&
+                            (other.createdAt > failed.createdAt ||
+                                (other.createdAt == failed.createdAt && other.taskId > failed.taskId))
+                    }
+                }
+                withContext(Dispatchers.IO) {
+                    finished.forEach { runCatching { client.clearInstallStage(it.taskId) } }
+                    staleUpdates.forEach { task ->
+                        installManager.discardStageBundle(task.taskId)
+                        val moduleId = task.cardId.removePrefix(CARD_ID_PREFIX)
+                        if (task.cardId != moduleId) {
+                            runCatching {
+                                val retry = installManager.submitInstall(moduleId, update = false)
+                                dispatchCardTask(retry)
+                            }
+                        }
+                    }
+                }
+                if (finished.isNotEmpty() || staleUpdates.isNotEmpty()) refreshCardFlags()
+            }
+        }
         client.connect()
     }
 
     fun authorize() { client.requestPermission(); client.connect() }
-    fun selectCard(id: String) {
-        if (!state.value.busy && state.value.cards.any { it.id == id && it.canReplace }) {
-            mutableState.update { it.copy(selectedCardId = id) }
-        }
-    }
     fun dismissError() { mutableState.update { it.copy(error = null) } }
     fun rejectInput(message: String) { mutableState.update { it.copy(error = message) } }
 
@@ -83,27 +128,17 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
     fun receiveExternal(uri: Uri) = installModuleZip(uri)
 
     private suspend fun loadGroup(group: ContentBinding) {
-        val (groups, saved, resources) = withContext(Dispatchers.IO) {
-            synchronized(ContentOperations.lock) {
-                Triple(contentStore.bindings(), contentStore.current(group.id),
-                    if (group.cardId != null) contentStore.resourceStatus(group.id) else null)
-            }
+        val saved = withContext(Dispatchers.IO) {
+            synchronized(ContentOperations.lock) { contentStore.current(group.id) }
         }
-        mutableState.update { it.copy(groups = groups, activeGroupId = group.id,
+        mutableState.update { it.copy(activeGroupId = group.id,
             sourcePackage = group.sourcePackage, contentKey = group.key,
-            boundCardId = group.cardId, boundCardTitle = group.cardTitle,
-            selectedCardId = group.cardId, packageName = saved?.name,
-            packageEntries = saved?.entries.orEmpty(), contentRevision = saved?.revision ?: 0,
-            carrierResources = resources,
-            status = if (group.cardId == null) "请选择模块的替换目标。" else "已绑定「${group.cardTitle}」") }
+            packageName = saved?.name,
+            packageEntries = saved?.entries.orEmpty(), contentRevision = saved?.revision ?: 0) }
     }
 
     fun refresh() = runOperation(queue = true) {
         refreshModules()
-        val cards = withContext(Dispatchers.IO) { client.listCards() }
-        mutableState.update { old -> old.copy(cards = cards,
-            selectedCardId = old.selectedCardId?.takeIf { id -> cards.any { it.id == id && it.canReplace } },
-            status = "${cards.size} 个载体资源") }
         reloadActive()
     }
 
@@ -113,17 +148,20 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
             synchronized(ContentOperations.lock) { moduleStore.list() to contentStore.bindings() }
         }
         val appPackage = getApplication<Application>().packageName
-        mutableState.update { it.copy(groups = groups, modulesLoaded = true, modules = modules.map { installed ->
+        mutableState.update { it.copy(modulesLoaded = true, modules = modules.map { installed ->
             val group = groups.firstOrNull { g -> g.sourcePackage == appPackage && g.key == installed.manifest.id }
             val manifest = installed.manifest
             ModuleInfo(id = manifest.id, name = manifest.name, version = manifest.version,
                 versionCode = manifest.versionCode, description = manifest.description,
                 author = manifest.author, capabilities = manifest.capabilities,
                 hasWebui = manifest.hasWebui, source = installed.source,
-                groupId = group?.id, boundCardId = group?.cardId, boundCardTitle = group?.cardTitle,
+                groupId = group?.id,
+                legacyCardId = group?.cardId,
+                legacyCardTitle = group?.cardTitle,
                 backgroundIntervalMinutes = manifest.backgroundIntervalMinutes).let(::withBackgroundSchedule)
         }) }
         BackgroundRefreshScheduler.schedule(getApplication(), modules)
+        refreshCardFlags()
     }
 
     private fun withBackgroundSchedule(module: ModuleInfo): ModuleInfo {
@@ -184,7 +222,11 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
         mutableState.update { it.copy(shop = it.shop.copy(installingModuleId = module.id)) }
         try {
             withContext(Dispatchers.IO) { ModuleCatalogRepository.download(module, file) }
-            installPreparedModule(file, source = "zip")
+            val installedId = installPreparedModule(file, source = "zip")
+            // When the module was kept (no downgrade pending), immediately install the card.
+            if (installedId != null && pendingModuleInstall == null) {
+                submitAndDispatch(installedId, update = false)
+            }
         } finally {
             if (pendingModuleInstall?.file != file) file.delete()
             mutableState.update { it.copy(shop = it.shop.copy(installingModuleId = null)) }
@@ -195,8 +237,9 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
         installModuleGitOnce(url, branch)
     }
 
+    /** Returns the installed manifest id, or null when a downgrade warning is pending. */
     private suspend fun installPreparedModule(file: File, source: String, updateOnly: Boolean = false,
-        allowDowngrade: Boolean = false) {
+        allowDowngrade: Boolean = false): String? {
         clearPendingModuleInstall()
         val result = try {
             withContext(Dispatchers.IO) {
@@ -206,7 +249,7 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
             // Retain the exact downloaded/copied ZIP, not a URI or URL that could change before confirmation.
             pendingModuleInstall = PendingModuleInstall(file, source, updateOnly)
             mutableState.update { it.copy(moduleDowngradeWarning = error.message) }
-            return
+            return null
         }
         val (installed, saved) = result
         if (updateOnly) {
@@ -217,6 +260,7 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
             finishModuleInstall(installed.manifest.id,
                 "模块「${installed.manifest.name}」已安装（版本 ${saved.revision}）。")
         }
+        return installed.manifest.id
     }
 
     fun confirmModuleDowngrade() = runOperation {
@@ -296,8 +340,8 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
         if (group != null) loadGroup(group)
         mutableState.update { it.copy(activeModuleId = moduleId, status = message,
             moduleInstallEvent = it.moduleInstallEvent + 1) }
-        onOperationResult?.invoke(OperationResult(true,
-            if (group?.cardId == null) "BINDING_REQUIRED" else "SAVED", message), group?.cardId)
+        refreshCardFlags()
+        onOperationResult?.invoke(OperationResult(true, "SAVED", message), null)
     }
 
     fun selectModule(id: String) = runOperation {
@@ -308,16 +352,43 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
         } ?: error("模块尚未安装。")
         loadGroup(group)
         mutableState.update { it.copy(activeModuleId = id) }
+        refreshCardFlags()
     }
 
     fun uninstallModule(id: String) = runOperation {
+        val cardId = CARD_ID_PREFIX + id
+        val hadCard = withContext(Dispatchers.IO) { installManager.cardInstalled(cardId) } ||
+            state.value.installTasks.any { it.cardId == cardId }
+        // Drop queued installs so a stale bundle cannot appear after the module is gone.
+        withContext(Dispatchers.IO) { installManager.cancelPendingForCard(cardId) }
+        val cardRemoved = if (hadCard) {
+            val task = withContext(Dispatchers.IO) {
+                synchronized(ContentOperations.lock) { installManager.removeCard(cardId) }
+            }
+            dispatchCardTask(task)
+        } else false
         withContext(Dispatchers.IO) {
             synchronized(ContentOperations.lock) {
                 val group = contentStore.group(getApplication<Application>().packageName, id)
-                require(group?.cardId == null) { "请先恢复该模块绑定的载体卡片，再卸载。" }
                 ModuleWebProfiles.remove(id)
-                if (group != null) contentStore.removeGroup(group.id)
                 moduleStore.remove(id)
+            }
+        }
+        // A bound carrier keeps the module's resources after the group is deleted;
+        // restore its original resources before dropping the binding record.
+        val legacyCard = state.value.modules.firstOrNull { it.id == id }?.legacyCardId
+        if (legacyCard != null) {
+            if (restoreCarrierIfPossible(legacyCard)) {
+                withContext(Dispatchers.IO) { contentStore.unbindCard(legacyCard) }
+            } else {
+                mutableState.update { it.copy(error =
+                    "模块已卸载，但载体「$legacyCard」的原始资源未能自动恢复。") }
+            }
+        }
+        withContext(Dispatchers.IO) {
+            synchronized(ContentOperations.lock) {
+                val group = contentStore.group(getApplication<Application>().packageName, id)
+                if (group != null) contentStore.removeGroup(group.id)
             }
         }
         BackgroundRefreshScheduler.removeModule(getApplication(), id)
@@ -326,69 +397,262 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
             mutableState.update { it.copy(activeModuleId = null) }
             reloadActive()
         }
-        mutableState.update { it.copy(status = "模块已卸载。") }
+        mutableState.update {
+            it.copy(status = if (cardRemoved) "模块已卸载，卡片移除任务已下发。" else "模块已卸载。")
+        }
     }
 
-    /** The bridge protocol is only wired for carriers backed by an installed module. */
-    private fun moduleIdFor(group: ContentBinding): String? {
-        if (group.sourcePackage != getApplication<Application>().packageName) return null
-        return if (moduleStore.get(group.key) != null) group.key else null
+    fun setInstallMode(mode: InstallMode) {
+        prefs.edit().putString(PREF_INSTALL_MODE, mode.prefName).apply()
+        mutableState.update { it.copy(installMode = mode) }
     }
 
-    fun installCarrier() = runOperation {
-        val groupId = requireNotNull(state.value.activeGroupId)
-        val id = requireNotNull(state.value.selectedCardId) { "请选择载体卡片。" }
-        val card = state.value.cards.firstOrNull { it.id == id && it.canReplace }
-            ?: error("目标不可写，请刷新资源。")
-        val result = withContext(Dispatchers.IO) {
+    /** Queues a fresh install task for the module card and dispatches it by [InstallMode]. */
+    fun installStandalone(moduleId: String) = runOperation { submitAndDispatch(moduleId, update = false) }
+
+    /** Queues an UPDATE task for an already-installed card. */
+    fun updateStandalone(moduleId: String) = runOperation { submitAndDispatch(moduleId, update = true) }
+
+    private suspend fun submitAndDispatch(moduleId: String, update: Boolean) {
+        val task = withContext(Dispatchers.IO) {
+            synchronized(ContentOperations.lock) { installManager.submitInstall(moduleId, update) }
+        }
+        dispatchCardTask(task)
+    }
+
+    private suspend fun dispatchCardTask(task: InstallTask): Boolean =
+        when (state.value.installMode) {
+            InstallMode.ROOT -> dispatchRoot(task)
+            InstallMode.SHIZUKU -> dispatchRelay(task)
+        }
+
+    private suspend fun cancelDispatch(task: InstallTask, code: String, message: String) {
+        withContext(Dispatchers.IO) {
+            runCatching { installManager.cancel(task.taskId) }
+            installManager.discardStageBundle(task.taskId)
+        }
+        recordResult(OperationResult(false, code, message))
+    }
+
+    private suspend fun dispatchRoot(task: InstallTask): Boolean {
+        val rootReady = withContext(Dispatchers.IO) { RootCardInstaller.isRootAvailable() }
+        if (!rootReady) {
+            cancelDispatch(task, "NO_ROOT", "授权模式为 root，但当前没有 root 权限。")
+            return false
+        }
+        val outcome = when (task.op) {
+            InstallOp.REMOVE -> withContext(Dispatchers.IO) {
+                runCatching { RootCardInstaller.remove(getApplication(), task.cardId, relayToken()) }
+                    .getOrElse { false to (it.message ?: "移除失败") }
+            }
+            else -> withContext(Dispatchers.IO) {
+                rootInstall(task, bundle = installManager.stageBundleFile(task.taskId))
+            }
+        }
+        if (!outcome.first) {
+            runCatching { installManager.cancel(task.taskId) }
+            installManager.discardStageBundle(task.taskId)
+            recordResult(OperationResult(false, "ROOT_INSTALL_FAILED", outcome.second))
+        } else {
+            installManager.finishTask(task.taskId, success = true, message = outcome.second)
+            recordResult(OperationResult(true, "CARD_" + task.op.name,
+                when (task.op) {
+                    InstallOp.REMOVE -> "卡片「${task.cardName}」已从背屏移除。"
+                    InstallOp.UPDATE -> "卡片「${task.cardName}」已更新。"
+                    else -> "新卡「${task.cardName}」已插入背屏列表。"
+                }))
+        }
+        return outcome.first
+    }
+
+    private suspend fun dispatchRelay(task: InstallTask): Boolean {
+        if (!state.value.managerCardInstalled) {
+            cancelDispatch(task, "NO_MANAGER",
+                "安装失败：管理器卡未安装。请先在「设置与关于」安装管理器卡。")
+            return false
+        }
+        if (state.value.shizuku.status != ShizukuStatus.READY) {
+            cancelDispatch(task, "NO_SHIZUKU", "安装失败：Shizuku 未连接，无法暂存安装包。")
+            return false
+        }
+        if (task.op == InstallOp.REMOVE) {
+            // Removal needs no staged package; the relay card claims it directly.
+            recordResult(OperationResult(true, "REMOVE_QUEUED",
+                "已入队。请打开背屏上的「RearCard 安装管理器」卡片完成移除。"))
+            return true
+        }
+        val staged = withContext(Dispatchers.IO) {
+            runCatching { client.stageInstallPackage(task.taskId, installManager.stageBundleFile(task.taskId)) }
+                .getOrElse { OperationResult(false, "STAGE_FAILED", "无法暂存安装包：${it.message}") to null }
+        }
+        val (result, path) = staged
+        if (!result.success) {
+            withContext(Dispatchers.IO) {
+                runCatching { installManager.cancel(task.taskId) }
+                installManager.discardStageBundle(task.taskId)
+            }
+            recordResult(result)
+            return false
+        }
+        withContext(Dispatchers.IO) {
             synchronized(ContentOperations.lock) {
-                val groups = contentStore.bindings()
-                val active = groups.first { it.id == groupId }
-                require(active.cardId == null || active.cardId == id) { "更换目标前请先恢复原来的载体。" }
-                require(groups.none { it.id != groupId && it.cardId == id }) {
-                    "这张卡片已绑定其他模块，请选择其他目标。"
-                }
-                val output = File.createTempFile("carrier-", ".zip", getApplication<Application>().cacheDir)
-                val snapshot = File.createTempFile("resources-", ".zip", getApplication<Application>().cacheDir)
-                try {
-                    val archive = contentStore.archive(groupId)
-                    val moduleId = moduleIdFor(active)
-                    builder.buildLiveCarrier(archive, output, id,
-                        LiveContentContract.uri(groupId).toString(),
-                        bridgeGroupId = moduleId?.let { groupId }, bridgeModuleId = moduleId)
-                    builder.writeStaticResourceSnapshot(archive, snapshot)
-                    client.replaceCard(id, output).also { result ->
-                        if (result.success) {
-                            contentStore.bind(groupId, id, card.title)
-                            contentStore.recordInstalledResources(groupId, snapshot)
-                        }
+                installManager.markStaged(task.taskId, path ?: "/data/local/tmp/rearcard-staging/${task.taskId}")
+            }
+        }
+        recordResult(OperationResult(true, "INSTALL_QUEUED",
+            "已在暂存区就绪。请打开背屏上的「RearCard 安装管理器」卡片完成安装。"))
+        return true
+    }
+
+    /** Runs the root dex agent against a staging bundle produced by [InstallManager]. */
+    private fun rootInstall(task: InstallTask, bundle: File): Pair<Boolean, String> {
+        val dir = File(getApplication<Application>().cacheDir, "install/root-${task.taskId}")
+        return try {
+            java.util.zip.ZipFile(bundle).use { zip ->
+                for (name in arrayOf("rearScreen.mrc", "app_icon.png", "preview.png")) {
+                    val entry = zip.getEntry(name) ?: return false to "暂存包缺少 $name"
+                    check(dir.isDirectory || dir.mkdirs()) { "无法创建临时目录。" }
+                    File(dir, name).outputStream().use { out ->
+                        zip.getInputStream(entry).use { it.copyTo(out) }
                     }
-                } finally { output.delete(); snapshot.delete() }
+                }
             }
+            val (ok, out) = RootCardInstaller.count(getApplication(), relayToken())
+            val before = out.lineSequence()
+                .firstOrNull { it.startsWith("RESULT=") }?.removePrefix("RESULT=")?.trim()?.toIntOrNull()
+            require(ok && before != null) { "无法读取卡片数量：$out" }
+            if (task.op == InstallOp.UPDATE) {
+                RootCardInstaller.update(
+                    getApplication(), task.cardId, task.cardName,
+                    File(dir, "rearScreen.mrc"), File(dir, "app_icon.png"), File(dir, "preview.png"),
+                    themeMagicDir(task.cardId), task.resourceRevision, relayToken(), before,
+                )
+            } else {
+                RootCardInstaller.install(
+                    getApplication(), task.cardId, task.cardName,
+                    File(dir, "rearScreen.mrc"), File(dir, "app_icon.png"), File(dir, "preview.png"),
+                    themeMagicDir(task.cardId), task.resourceRevision, relayToken(), before + 1,
+                )
+            }
+        } finally {
+            dir.deleteRecursively()
         }
-        if (!result.success) { recordResult(result, id); return@runOperation }
-        reloadActive()
-        refreshModules()
-        recordResult(OperationResult(true, "CARRIER_WRITTEN", "载体已写入「${card.title}」，请在背屏设置中重新应用。"), id)
-        openSettingsAfterWrite(id)
-        refreshAfterChange()
     }
 
-    fun restore(id: String) = runOperation {
-        val result = withContext(Dispatchers.IO) {
-            synchronized(ContentOperations.lock) {
-                client.restoreCard(id).also { if (it.success) contentStore.unbindCard(id) }
+    /** Root-only bootstrap: writes the relay manager card itself as a standalone card. */
+    fun installManagerCard() = runOperation {
+        val application = getApplication<Application>()
+        val rootReady = withContext(Dispatchers.IO) { RootCardInstaller.isRootAvailable() }
+        if (!rootReady) {
+            recordResult(OperationResult(false, "NO_ROOT", "安装管理器卡需要 root 权限。"))
+            return@runOperation
+        }
+        val outcome = withContext(Dispatchers.IO) {
+            val dir = File(application.cacheDir, "install/manager")
+            try {
+                ManagerCardAssets.writeTo(application, dir)
+                val (ok, out) = RootCardInstaller.count(application, relayToken())
+                val before = out.lineSequence()
+                    .firstOrNull { it.startsWith("RESULT=") }?.removePrefix("RESULT=")?.trim()?.toIntOrNull()
+                require(ok && before != null) { "无法读取卡片数量：$out" }
+                RootCardInstaller.install(
+                    application, MANAGER_CARD_ID, "RearCard 安装管理器",
+                    File(dir, "rearScreen.mrc"), File(dir, "app_icon.png"), File(dir, "preview.png"),
+                    themeMagicDir(MANAGER_CARD_ID), MANAGER_REVISION, relayToken(), before + 1,
+                )
+            } finally {
+                dir.deleteRecursively()
             }
         }
-        recordResult(result, id)
-        if (result.success) { reloadActive(); refreshModules(); openSettingsAfterWrite(id); refreshAfterChange() }
+        if (outcome.first) {
+            prefs.edit().putBoolean(PREF_MANAGER_INSTALLED, true).apply()
+            mutableState.update { it.copy(managerCardInstalled = true) }
+            recordResult(OperationResult(true, "MANAGER_INSTALLED",
+                "安装管理器已插入背屏列表，打开它即可执行队列中的安装。"))
+        } else {
+            recordResult(OperationResult(false, "MANAGER_FAILED", outcome.second))
+        }
     }
 
-    fun confirmReapplied() = runOperation {
-        val groupId = requireNotNull(state.value.activeGroupId)
-        withContext(Dispatchers.IO) { contentStore.confirmReapplied(groupId) }
-        reloadActive()
-        mutableState.update { it.copy(status = "已记录你的重新应用确认。") }
+    private companion object {
+        const val MANAGER_CARD_ID = "dev.finall.rearcardbridge.manager"
+        const val MANAGER_REVISION = 1L
+        const val CARD_ID_PREFIX = "finall-card-"
+        const val PREFS = "rearcard"
+        const val PREF_INSTALL_MODE = "install_mode"
+        const val PREF_MANAGER_INSTALLED = "manager_card_installed"
+    }
+
+    /** Recomputes cardInstalled for every module and cardNeedsUpdate where a snapshot exists. */
+    private suspend fun refreshCardFlags() {
+        // Best-effort cleanup of orphan staging dirs left by finished/cancelled tasks.
+        withContext(Dispatchers.IO) {
+            val live = state.value.installTasks
+                .filter {
+                    it.state != dev.finall.rearcardbridge.module.install.InstallTaskState.SUCCEEDED &&
+                        it.state != dev.finall.rearcardbridge.module.install.InstallTaskState.FAILED
+                }
+                .map { it.taskId }.toSet()
+            File("/data/local/tmp/rearcard-staging").listFiles()?.forEach { dir ->
+                if (dir.isDirectory && dir.name !in live) runCatching { client.clearInstallStage(dir.name) }
+            }
+        }
+        val modules = state.value.modules.map { module ->
+            val cardId = CARD_ID_PREFIX + module.id
+            val installed = withContext(Dispatchers.IO) { installManager.cardInstalled(cardId) }
+            module.copy(
+                cardInstalled = installed,
+                cardNeedsUpdate = if (installed)
+                    withContext(Dispatchers.IO) { installManager.cardNeedsUpdate(module.id) } else null,
+            )
+        }
+        mutableState.update { it.copy(modules = modules) }
+        // Migration tail: a module still bound to a legacy carrier whose standalone
+        // card is now installed gets its carrier resources restored and the binding
+        // cleared. Content groups (and thus user data) are untouched.
+        modules.filter { it.cardInstalled && it.legacyCardId != null }.forEach { module ->
+            val carrierId = module.legacyCardId ?: return@forEach
+            if (!migratedCarriers.add(carrierId)) return@forEach
+            if (restoreCarrierIfPossible(carrierId)) {
+                withContext(Dispatchers.IO) { contentStore.unbindCard(carrierId) }
+                mutableState.update { s -> s.copy(modules = s.modules.map {
+                    if (it.id == module.id) it.copy(legacyCardId = null, legacyCardTitle = null) else it
+                }, status = "已从载体「${module.legacyCardTitle ?: carrierId}」迁移为独立背屏卡。") }
+            } else {
+                mutableState.update { it.copy(error =
+                    "独立背屏卡已安装，但恢复载体「${module.legacyCardTitle ?: carrierId}」的原始资源失败。") }
+            }
+        }
+    }
+
+    private val migratedCarriers = mutableSetOf<String>()
+
+    /**
+     * Writes the stored original.zip back over the carrier's rearscreen resource.
+     * Returns false when no backup exists or no privileged channel can write it.
+     */
+    private suspend fun restoreCarrierIfPossible(cardId: String): Boolean {
+        val backup = File(getApplication<Application>().getExternalFilesDir(null),
+            "backups/$cardId/original.zip")
+        if (!backup.isFile) return false
+        return withContext(Dispatchers.IO) {
+            runCatching {
+                if (RootCardInstaller.isRootAvailable()) {
+                    RootCardInstaller.restore(getApplication(), cardId, backup.absolutePath, relayToken()).first
+                } else if (state.value.shizuku.status == ShizukuStatus.READY) {
+                    client.restoreCarrier(cardId, backup).success
+                } else false
+            }.getOrDefault(false)
+        }
+    }
+
+    fun cancelInstallTask(taskId: String) = runOperation {
+        withContext(Dispatchers.IO) {
+            runCatching { client.clearInstallStage(taskId) }
+            installManager.cancel(taskId)
+            installManager.discardStageBundle(taskId)
+        }
+        mutableState.update { it.copy(status = "安装任务已取消。") }
     }
 
     fun reload() = runOperation(queue = true) { refreshModules(); reloadActive() }
@@ -398,26 +662,23 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
         }
         if (group != null) loadGroup(group)
     }
-    fun openRearSettings(id: String? = state.value.boundCardId) = runOperation {
-        recordResult(requestRearSettings(id), id)
+    private val relayTokenLock = Any()
+
+    private fun relayToken(): String = synchronized(relayTokenLock) {
+        val file = File(getApplication<Application>().filesDir, "relay-token")
+        if (file.isFile) file.readText().trim().takeIf { it.isNotEmpty() }?.let { return@synchronized it }
+        val token = java.util.UUID.randomUUID().toString()
+        file.writeText(token)
+        token
     }
-    private fun requestRearSettings(id: String?): OperationResult =
-        onOpenRearSettingsRequested?.invoke(id) ?: OperationResult(false, "ERROR", "无法打开背屏设置。")
-    private fun openSettingsAfterWrite(id: String) {
-        val result = requestRearSettings(id)
-        if (!result.success) mutableState.update { it.copy(error = result.message) }
-    }
-    private suspend fun refreshAfterChange() {
-        try {
-            val cards = withContext(Dispatchers.IO) { client.listCards() }
-            mutableState.update { it.copy(cards = cards) }
-        } catch (cancelled: CancellationException) { throw cancelled }
-        catch (error: Exception) { mutableState.update { it.copy(error = "资源操作已完成，但刷新列表失败：${error.message}") } }
-    }
-    private fun recordResult(result: OperationResult, cardId: String? = state.value.boundCardId) {
+
+    private fun themeMagicDir(cardId: String): String =
+        "/data/system/theme_magic/users/0/rearScreenAiApp_Theme/$cardId"
+
+    private fun recordResult(result: OperationResult) {
         mutableState.update { it.copy(status = result.message,
-            error = result.message.takeUnless { result.success || result.code == "BINDING_REQUIRED" }) }
-        onOperationResult?.invoke(result, cardId)
+            error = result.message.takeUnless { result.success }) }
+        onOperationResult?.invoke(result, null)
     }
     private fun runOperation(queue: Boolean = false, block: suspend () -> Unit) {
         if (state.value.busy && !queue) return
@@ -434,7 +695,6 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application) 
     override fun onCleared() {
         clearPendingModuleInstall()
         onOperationResult = null
-        onOpenRearSettingsRequested = null
         client.close()
     }
 }

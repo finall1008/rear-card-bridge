@@ -4,20 +4,17 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
-import android.graphics.BitmapFactory
 import android.os.IBinder
 import android.os.ParcelFileDescriptor
 import dev.finall.rearcardbridge.BuildConfig
 import dev.finall.rearcardbridge.ipc.CardUserService
 import dev.finall.rearcardbridge.ipc.ICardService
-import dev.finall.rearcardbridge.model.CardInfo
 import dev.finall.rearcardbridge.model.OperationResult
 import dev.finall.rearcardbridge.model.ShizukuState
 import dev.finall.rearcardbridge.model.ShizukuStatus
 import java.io.File
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import org.json.JSONArray
 import org.json.JSONObject
 import rikka.shizuku.Shizuku
 
@@ -88,29 +85,7 @@ class ShizukuCardClient(context: Context) {
             mutableState.value = ShizukuState(ShizukuStatus.ERROR, error.message ?: "授权请求失败")
         }
     }
-    fun listCards(): List<CardInfo> {
-        val remote = requireService()
-        val array = JSONArray(remote.listCards())
-        return (0 until array.length()).map { index ->
-            val item = array.getJSONObject(index)
-            val id = item.getString("id")
-            val preview = remote.openPreviewImage(id)?.use { descriptor ->
-                BitmapFactory.decodeFileDescriptor(descriptor.fileDescriptor)
-            }
-            CardInfo(id, item.getString("title"), item.getString("sourcePath"),
-                item.getBoolean("canReplace"), item.getBoolean("hasBackup"), preview)
-        }
-    }
-    fun replaceCard(cardId: String, packageFile: File): OperationResult =
-        ParcelFileDescriptor.open(packageFile, ParcelFileDescriptor.MODE_READ_ONLY).use {
-            parse(requireService().replaceCard(cardId, it))
-        }
-    fun restoreCard(cardId: String): OperationResult = parse(requireService().restoreCard(cardId))
     private fun requireService(): ICardService = requireNotNull(service) { "Shizuku 服务尚未连接。" }
-    private fun parse(value: String): OperationResult {
-        val json = JSONObject(value)
-        return OperationResult(json.getBoolean("success"), json.getString("code"), json.getString("message"))
-    }
     fun close() {
         closed = true
         Shizuku.removeBinderReceivedListener(binderReceived)
@@ -118,6 +93,23 @@ class ShizukuCardClient(context: Context) {
         Shizuku.removeRequestPermissionResultListener(permissionResult)
         runCatching { Shizuku.unbindUserService(args, connection, true) }
         service = null
+    }
+    fun stageInstallPackage(taskId: String, packageFile: File): Pair<OperationResult, String?> =
+        ParcelFileDescriptor.open(packageFile, ParcelFileDescriptor.MODE_READ_ONLY).use { descriptor ->
+            parseStage(requireService().stageInstallPackage(taskId, descriptor))
+        }
+    fun clearInstallStage(taskId: String): OperationResult {
+        val json = JSONObject(requireService().clearInstallStage(taskId))
+        return OperationResult(json.getBoolean("success"), json.getString("code"), json.getString("message"))
+    }
+    fun restoreCarrier(cardId: String, backupFile: File): OperationResult {
+        val json = JSONObject(requireService().restoreCarrier(cardId, backupFile.absolutePath))
+        return OperationResult(json.getBoolean("success"), json.getString("code"), json.getString("message"))
+    }
+    private fun parseStage(value: String): Pair<OperationResult, String?> {
+        val json = JSONObject(value)
+        val path = if (!json.has("path") || json.isNull("path")) null else json.getString("path").ifBlank { null }
+        return OperationResult(json.getBoolean("success"), json.getString("code"), json.getString("message")) to path
     }
     companion object { private const val PERMISSION_REQUEST = 1 }
 }

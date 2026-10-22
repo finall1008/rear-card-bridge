@@ -31,15 +31,11 @@ class MainActivity : ComponentActivity() {
                     .putExtra("key", viewModel.state.value.contentKey)
                     .putExtra("revision", viewModel.state.value.contentRevision))
         }
-        viewModel.onOpenRearSettingsRequested = ::openRearSettings
         setContent {
             val state = viewModel.state.collectAsStateWithLifecycle().value
             BridgeScreen(state = state,
                 onAuthorize = viewModel::authorize, onRefresh = viewModel::refresh,
-                onSelectCard = viewModel::selectCard, onInstallCarrier = viewModel::installCarrier,
-                onRestore = viewModel::restore, onOpenRearSettings = viewModel::openRearSettings,
                 onDismissError = viewModel::dismissError,
-                onConfirmReapplied = viewModel::confirmReapplied,
                 onInstallModuleZip = { pickModule.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream")) },
                 onInstallModuleGit = viewModel::installModuleGit,
                 onRefreshShop = viewModel::refreshShop,
@@ -50,7 +46,12 @@ class MainActivity : ComponentActivity() {
                 onUninstallModule = viewModel::uninstallModule,
                 onUpdateModule = viewModel::updateModule,
                 onToggleBackgroundRefresh = viewModel::toggleBackgroundRefresh,
-                onSetBackgroundRefreshInterval = viewModel::setBackgroundRefreshInterval)
+                onSetBackgroundRefreshInterval = viewModel::setBackgroundRefreshInterval,
+                onInstallStandalone = viewModel::installStandalone,
+                onUpdateStandalone = viewModel::updateStandalone,
+                onInstallManagerCard = viewModel::installManagerCard,
+                onSetInstallMode = viewModel::setInstallMode,
+                onCancelInstallTask = viewModel::cancelInstallTask)
         }
         if (savedInstanceState == null) handleIntent(intent)
     }
@@ -88,24 +89,8 @@ class MainActivity : ComponentActivity() {
             else viewModel.receiveExternal(uri)
         }
     }
-    private fun openRearSettings(cardId: String?): OperationResult {
-        val state = viewModel.state.value
-        val title = state.cards.firstOrNull { it.id == cardId }?.title
-            ?: state.boundCardTitle.takeIf { cardId == state.boundCardId }
-        return try {
-            startActivity(Intent("miui.intent.action.rearscreen_setting").setClassName(
-                "com.android.thememanager", "com.rearScreen.RearScreenSettingActivity"))
-            val message = if (title != null) "请在背屏设置中移除旧卡并重新应用「$title」"
-                else "请在背屏设置中应用载体卡片"
-            Toast.makeText(this, message, Toast.LENGTH_LONG).show()
-            OperationResult(true, "SETTINGS_OPENED", "背屏设置已打开。")
-        } catch (error: Exception) {
-            OperationResult(false, "ERROR", "打开背屏设置失败：${error.message}")
-        }
-    }
     override fun onDestroy() {
         viewModel.onOperationResult = null
-        viewModel.onOpenRearSettingsRequested = null
         super.onDestroy()
     }
     companion object {
