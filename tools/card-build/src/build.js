@@ -4,7 +4,7 @@ import { zipSync } from 'fflate';
 import { compileScript } from './compile.js';
 
 /** 模块包允许收录的根条目：与 ModuleManifest/ModuleStore 的包结构一致。 */
-const ROOT_FILES = ['module.json', 'icon.png'];
+const ROOT_FILES = ['module.json', 'icon.png', 'preview.png'];
 const ROOT_DIRS = ['card', 'webroot', 'background'];
 
 /** 构建期结构/IO 错误。 */
@@ -51,7 +51,7 @@ function walkFiles(dir, relBase, out) {
 }
 
 /**
- * 列出会被打进 ZIP 的文件：module.json、icon.png、card/**、webroot/**、background/**。
+ * 列出会被打进 ZIP 的文件：module.json、icon.png、preview.png、card/**、webroot/**、background/**。
  * 其余内容（node_modules、package.json、.git、dist、工具源码等）不会被收录。
  *
  * @param {string} sourceDir 模块源目录（根目录直接是 module.json）

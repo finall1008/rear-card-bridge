@@ -138,16 +138,22 @@ val generateRootAgentDex = tasks.register("generateRootAgentDex") {
         check(androidJar.isFile) { "android.jar not found: $androidJar" }
         val d8 = File(sdkDir, "build-tools/36.0.0/d8")
         check(d8.isFile) { "d8 not found: $d8" }
+        // /usr/libexec/java_home is macOS-only; CI sets JAVA_HOME instead.
         val javaHome = ByteArrayOutputStream()
-        val home = rootAgentExec.execOperations.exec {
-            setCommandLine(listOf("/usr/libexec/java_home"))
-            standardOutput = javaHome
-            isIgnoreExitValue = true
-        }
-        val javac = if (home.exitValue == 0) {
-            File(javaHome.toString(Charsets.UTF_8).trim(), "bin/javac")
-        } else {
-            File(System.getProperty("java.home"), "bin/javac")
+        val javaHomeTool = File("/usr/libexec/java_home")
+        val home = if (javaHomeTool.isFile) {
+            rootAgentExec.execOperations.exec {
+                setCommandLine(listOf(javaHomeTool.absolutePath))
+                standardOutput = javaHome
+                isIgnoreExitValue = true
+            }
+        } else null
+        val javac = when {
+            home != null && home.exitValue == 0 ->
+                File(javaHome.toString(Charsets.UTF_8).trim(), "bin/javac")
+            !System.getenv("JAVA_HOME").isNullOrBlank() ->
+                File(System.getenv("JAVA_HOME"), "bin/javac")
+            else -> File(System.getProperty("java.home"), "bin/javac")
         }
         check(javac.isFile) { "javac not found: $javac" }
         rootAgentExec.execOperations.exec {
